@@ -1,0 +1,27 @@
+# Build outputs
+build/
+Objects/
+Listings/
+MDK-ARM/RS01_sample_H7/
+*.o
+*.obj
+*.d
+*.crf
+*.axf
+*.elf
+*.hex
+*.bin
+*.map
+*.lst
+*.lnp
+*.htm
+*.build_log.htm
+
+# Local IDE/session and temporary files
+*.uvguix.*
+*.uvgui.*
+*.bak
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
