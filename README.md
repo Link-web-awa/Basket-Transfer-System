@@ -44,7 +44,7 @@ MDK-ARM/                    Keil 工程、启动文件和 RTE 配置
 RS01_sample_H7.ioc          CubeMX 配置
 ```
 
-开发时使用 ARM Compiler 5.06。Keil 工程入口为 `MDK-ARM/RS01_sample_H7.uvprojx`。选择 STM32H723 对应的设备支持包后编译、下载。
+开发时使用eide插件，编译器为ARM Compiler 5.06。Keil 工程入口为 `MDK-ARM/RS01_sample_H7.uvprojx`，导入工程时候选择新建工作区文件夹，避免污染源文件夹。选择 STM32H723 对应的设备支持包后编译、下载。
 
 日常验证使用相邻的 `../RS01_sample_H7_EIDE/` 工程，其源码目录引用本仓库；配置文件为 `.eide/eide.yml`，输出为 `build/RS01_sample_H7/RS01_sample_H7.axf` 和 `.hex`。EIDE 配置目录未纳入本仓库，单独克隆本仓库不会自动获得该配置。
 
