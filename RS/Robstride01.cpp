@@ -4,7 +4,7 @@
 #include "fdcan.h"
 
 static FDCAN_HandleTypeDef &hcan = hfdcan2;
-volatile HAL_StatusTypeDef robstride_last_tx_status = HAL_OK;
+static HAL_StatusTypeDef robstride_last_tx_status = HAL_OK;
 
 /* 原 bxCAN 接口适配到 STM32H7 FDCAN；仅用于经典 CAN 的 8 字节帧。 */
 struct CAN_TxHeaderTypeDef {
@@ -40,9 +40,10 @@ static HAL_StatusTypeDef HAL_CAN_AddTxMessage(
             return robstride_last_tx_status = HAL_TIMEOUT;
         HAL_Delay(1U);
     }
-    robstride_last_tx_status = HAL_FDCAN_AddMessageToTxFifoQ(can, &header, data);
-    if (robstride_last_tx_status == HAL_OK) *mailbox = 0U;
-    return robstride_last_tx_status;
+    HAL_StatusTypeDef status = HAL_FDCAN_AddMessageToTxFifoQ(can, &header, data);
+    robstride_last_tx_status = status;
+    if (status == HAL_OK) *mailbox = 0U;
+    return status;
 }
 
  #define P_MIN -12.5f
@@ -893,103 +894,71 @@ MIT_TYPE RobStride_Motor::get_MIT_Type() { return MIT_Type; }
 void RobStride_Motor::Set_MIT_Mode(bool mode) { MIT_Mode = mode; }
 void RobStride_Motor::Set_MIT_Type(MIT_TYPE type) { MIT_Type = type; }
 
-/* 保留 main.c 已使用的 5 个 C 接口，启动流程不变。 */
-#include "fdcan.h"
-#include <string.h>
-
-static const uint8_t MOTOR_ID = 0x06U;
+/* C-compatible control interface. */
 static const uint8_t MASTER_ID = 0xFDU;
-static RobStride_Motor rs01_motor(MOTOR_ID, false);
-volatile uint32_t rs01_status_rx_count;
-volatile uint32_t rs01_status_rx_id;
-volatile uint8_t rs01_status_rx_data[8];
-/* 仅记录上电控制序列，周期查询不会覆盖它，便于核对实际发送字节。 */
-struct RS01_StartupFrame {
-    uint32_t id;
-    uint8_t data[8];
-};
-volatile RS01_StartupFrame rs01_startup_tx[7];
-volatile uint32_t rs01_startup_tx_count;
-volatile uint32_t rs01_parameter_rx_error_count;
-volatile uint32_t rs01_fault_rx_count;
-volatile uint8_t rs01_fault_rx_data[8];
-/* 1 失能，2 设置模式，3 确认模式，4 确认使能，5 写参数，6 已下发速度。 */
-volatile uint8_t rs01_speed_stage;
-volatile uint32_t rs01_rx_count;
-volatile RS01_StartupFrame rs01_startup_rx[16];
-volatile uint32_t rs01_last_rx_id;
-volatile uint32_t rs01_mode_rx_count;
-volatile uint32_t rs01_mode_rx_id;
-volatile uint8_t rs01_mode_rx_data[8];
+struct MotorControlContext {
+    uint8_t motor_id;
+    uint32_t status_rx_count;
+    uint32_t status_rx_id;
+    int run_mode;
+    int pattern;
+    HAL_StatusTypeDef feedback_status;
 
-/* 解析反馈，调试器中可查看 rs01_motor 的模式、速度和故障。 */
-void RS01_PollFeedback(void)
+    explicit MotorControlContext(uint8_t id)
+        : motor_id(id), status_rx_count(0U), status_rx_id(0U),
+          run_mode(-1), pattern(0), feedback_status(HAL_OK) {}
+};
+static MotorControlContext default_motor(RS01_MOTOR_ID);
+
+static bool IsMotorReply(const FDCAN_RxHeaderTypeDef &header, const MotorControlContext &motor)
+{
+    return header.IdType == FDCAN_EXTENDED_ID &&
+           header.RxFrameType == FDCAN_DATA_FRAME &&
+           header.DataLength == FDCAN_DLC_BYTES_8 &&
+           ((header.Identifier >> 8) & 0xFFU) == motor.motor_id &&
+           (header.Identifier & 0xFFU) == MASTER_ID;
+}
+
+static HAL_StatusTypeDef ProcessMotorReply(MotorControlContext &motor, const FDCAN_RxHeaderTypeDef &header,
+                                           uint8_t data[8])
+{
+    const uint32_t type = (header.Identifier >> 24) & 0x1FU;
+    if (type == 0x15U ||
+        (type == 2U && (header.Identifier & 0x003F0000UL) != 0U))
+        return motor.feedback_status = HAL_ERROR;
+    if (type == 0x11U && ((header.Identifier >> 16) & 0xFFU) != 0U)
+        return HAL_ERROR;
+    if (type == 2U)
+    {
+        ++motor.status_rx_count;
+        motor.status_rx_id = header.Identifier;
+        motor.pattern = (int)((header.Identifier >> 22) & 3U);
+    }
+    if (type == 0x11U && data[0] == 0x05U && data[1] == 0x70U)
+        motor.run_mode = data[4];
+    return HAL_OK;
+}
+
+static void PollMotorFeedback(MotorControlContext &motor)
 {
     while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
     {
         FDCAN_RxHeaderTypeDef header;
         uint8_t data[8];
-        if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0,
-                                  &header, data) != HAL_OK) return;
-        if (rs01_rx_count < 16U)
+        if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data) != HAL_OK)
         {
-            volatile RS01_StartupFrame *frame = &rs01_startup_rx[rs01_rx_count];
-            frame->id = header.Identifier;
-            for (uint32_t i = 0; i < 8U; ++i) frame->data[i] = data[i];
+            motor.feedback_status = HAL_ERROR;
+            return;
         }
-        ++rs01_rx_count;
-        rs01_last_rx_id = header.Identifier;
-        /* 在目标 ID 和读取状态过滤之前保存模式回包，定位解析条件。 */
-        if (header.IdType == FDCAN_EXTENDED_ID &&
-            header.RxFrameType == FDCAN_DATA_FRAME &&
-            header.DataLength == FDCAN_DLC_BYTES_8 &&
-            ((header.Identifier >> 24) & 0x1FU) == 0x11U &&
-            data[0] == 0x05U && data[1] == 0x70U)
-        {
-            ++rs01_mode_rx_count;
-            rs01_mode_rx_id = header.Identifier;
-            for (uint32_t i = 0; i < 8U; ++i) rs01_mode_rx_data[i] = data[i];
-        }
-        if (header.IdType == FDCAN_EXTENDED_ID &&
-            header.RxFrameType == FDCAN_DATA_FRAME &&
-            header.DataLength == FDCAN_DLC_BYTES_8 &&
-            ((header.Identifier >> 8) & 0xFFU) == MOTOR_ID &&
-            (header.Identifier & 0xFFU) == MASTER_ID)
-        {
-            const uint32_t type = (header.Identifier >> 24) & 0x1FU;
-            if (type == 0x11U && ((header.Identifier >> 16) & 0xFFU) != 0U)
-            {
-                ++rs01_parameter_rx_error_count;
-                continue;
-            }
-            if (type == 0x15U)
-            {
-                ++rs01_fault_rx_count;
-                for (uint32_t i = 0; i < 8U; ++i) rs01_fault_rx_data[i] = data[i];
-            }
-            if (((header.Identifier >> 24) & 0x1FU) == 2U)
-            {
-                rs01_status_rx_id = header.Identifier;
-                for (uint32_t i = 0; i < 8U; ++i) rs01_status_rx_data[i] = data[i];
-                ++rs01_status_rx_count;
-            }
-            rs01_motor.RobStride_Motor_Analysis(data, header.Identifier);
-        }
-    }
-    /* 轮流读回模式、目标速度、限流和实际速度，确认电机是否接受设置。 */
-    static uint32_t query_tick;
-    static uint8_t query_index;
-    static const uint16_t parameters[] = {0x7005U, 0x700AU, 0x7018U, 0x701BU};
-    if (rs01_speed_stage == 6U &&
-        (uint32_t)(HAL_GetTick() - query_tick) >= 100U)
-    {
-        rs01_motor.Get_RobStride_Motor_parameter(parameters[query_index]);
-        query_index = (uint8_t)((query_index + 1U) % 4U);
-        query_tick = HAL_GetTick();
+        if (IsMotorReply(header, motor)) ProcessMotorReply(motor, header, data);
     }
 }
 
-/* 私有协议：扩展帧 ID = 通信类型 | 主机 ID | 电机 ID。 */
+void RS01_PollFeedback(void)
+{
+    PollMotorFeedback(default_motor);
+}
+
 static HAL_StatusTypeDef SendFrameTo(uint8_t target_id, uint8_t type, const uint8_t data[8])
 {
     FDCAN_TxHeaderTypeDef header = {0};
@@ -1002,14 +971,6 @@ static HAL_StatusTypeDef SendFrameTo(uint8_t target_id, uint8_t type, const uint
     header.BitRateSwitch = FDCAN_BRS_OFF;
     header.FDFormat = FDCAN_CLASSIC_CAN;
     header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-
-    if (type != 0x00U && type != 0x11U && rs01_startup_tx_count < 7U)
-    {
-        volatile RS01_StartupFrame *frame = &rs01_startup_tx[rs01_startup_tx_count];
-        frame->id = header.Identifier;
-        for (uint32_t i = 0; i < 8U; ++i) frame->data[i] = data[i];
-        ++rs01_startup_tx_count;
-    }
 
     const uint32_t start = HAL_GetTick();
     while (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) == 0U)
@@ -1037,96 +998,155 @@ static HAL_StatusTypeDef SendFrameTo(uint8_t target_id, uint8_t type, const uint
 
 static HAL_StatusTypeDef SendFrame(uint8_t type, const uint8_t data[8])
 {
-    return SendFrameTo(MOTOR_ID, type, data);
+    return SendFrameTo(RS01_MOTOR_ID, type, data);
 }
 
-/* 查询私有协议设备，不修改 ID，不发送使能或运动指令。
-   遍历 0x00~0xFF，每个地址等待 25 ms，返回第一个有效回复的 ID。 */
+
+static HAL_StatusTypeDef QueryMotorUniqueId(uint8_t motor_id, uint8_t unique_id[8])
+{
+    FDCAN_RxHeaderTypeDef header;
+    uint8_t data[8];
+    /* Clear queued startup broadcasts before every new addressed query. */
+    while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+    {
+        HAL_StatusTypeDef status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+        if (status != HAL_OK) return status;
+    }
+    const uint8_t request[8] = {0};
+    HAL_StatusTypeDef status = SendFrameTo(motor_id, 0x00U, request);
+    if (status != HAL_OK) return status;
+    const uint32_t start = HAL_GetTick();
+    do
+    {
+        while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+        {
+            status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+            if (status != HAL_OK) return status;
+            if (header.IdType == FDCAN_EXTENDED_ID &&
+                header.RxFrameType == FDCAN_DATA_FRAME &&
+                header.DataLength == FDCAN_DLC_BYTES_8 &&
+                header.Identifier == (((uint32_t)motor_id << 8) | 0xFEU))
+            {
+                memcpy(unique_id, data, 8U);
+                return HAL_OK;
+            }
+        }
+        HAL_Delay(1U);
+    } while ((uint32_t)(HAL_GetTick() - start) < 50U);
+    return HAL_TIMEOUT;
+}
+
+static HAL_StatusTypeDef ConfirmMotorParameterReply(uint8_t motor_id)
+{
+    /* Confirm the application protocol, not just a boot-time ID broadcast. */
+    const uint8_t request[8] = {0x05U, 0x70U, 0, 0, 0, 0, 0, 0};
+    HAL_StatusTypeDef status = SendFrameTo(motor_id, 0x11U, request);
+    if (status != HAL_OK) return status;
+    const uint32_t start = HAL_GetTick();
+    do
+    {
+        while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+        {
+            FDCAN_RxHeaderTypeDef header;
+            uint8_t data[8];
+            status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+            if (status != HAL_OK) return status;
+            const uint32_t expected_id = (0x11UL << 24) | ((uint32_t)motor_id << 8) | MASTER_ID;
+            if (header.IdType == FDCAN_EXTENDED_ID &&
+                header.RxFrameType == FDCAN_DATA_FRAME &&
+                header.DataLength == FDCAN_DLC_BYTES_8 &&
+                header.Identifier == expected_id && data[0] == 0x05U && data[1] == 0x70U)
+                return HAL_OK;
+        }
+        HAL_Delay(1U);
+    } while ((uint32_t)(HAL_GetTick() - start) < 200U);
+    return HAL_TIMEOUT;
+}
+
 HAL_StatusTypeDef RS01_FindMotorId(uint8_t *motor_id)
 {
     if (motor_id == NULL) return HAL_ERROR;
-    const uint8_t request[8] = {0};
-    for (uint32_t candidate = 0; candidate <= 0xFFU; ++candidate)
+    *motor_id = 0xFFU; /* Invalid until the complete confirmation succeeds. */
+    for (uint32_t candidate = 0; candidate < 128U; ++candidate)
     {
-        HAL_StatusTypeDef status = SendFrameTo((uint8_t)candidate, 0x00U, request);
+        uint8_t first_uid[8], second_uid[8];
+        HAL_StatusTypeDef status = QueryMotorUniqueId((uint8_t)candidate, first_uid);
+        if (status == HAL_TIMEOUT) continue;
         if (status != HAL_OK) return status;
-        const uint32_t start = HAL_GetTick();
-        do
-        {
-            while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
-            {
-                FDCAN_RxHeaderTypeDef header;
-                uint8_t data[8];
-                status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
-                if (status != HAL_OK) return status;
-                if (header.IdType == FDCAN_EXTENDED_ID &&
-                    header.RxFrameType == FDCAN_DATA_FRAME &&
-                    header.DataLength == FDCAN_DLC_BYTES_8 &&
-                    ((header.Identifier >> 24) & 0x1FU) == 0U &&
-                    (header.Identifier & 0xFFU) == 0xFEU)
-                {
-                    *motor_id = (uint8_t)((header.Identifier >> 8) & 0xFFU);
-                    return HAL_OK;
-                }
-            }
-            HAL_Delay(1U);
-        } while ((uint32_t)(HAL_GetTick() - start) < 25U);
+        HAL_Delay(20U);
+        status = QueryMotorUniqueId((uint8_t)candidate, second_uid);
+        if (status == HAL_TIMEOUT) continue;
+        if (status != HAL_OK) return status;
+        if (memcmp(first_uid, second_uid, 8U) != 0) continue;
+        status = ConfirmMotorParameterReply((uint8_t)candidate);
+        if (status == HAL_TIMEOUT) continue;
+        if (status != HAL_OK) return status;
+        *motor_id = (uint8_t)candidate;
+        return HAL_OK;
     }
     return HAL_TIMEOUT;
 }
 
-/* 参数浮点数按小端顺序写入数据区 Byte4~7。 */
-static HAL_StatusTypeDef WriteFloat(uint16_t index, float value)
+static HAL_StatusTypeDef WriteFloatTo(uint8_t motor_id, uint16_t index, float value)
 {
     uint8_t data[8] = {0};
     data[0] = (uint8_t)index;
     data[1] = (uint8_t)(index >> 8);
     memcpy(&data[4], &value, sizeof(value));
-    return SendFrame(0x12U, data);
+    return SendFrameTo(motor_id, 0x12U, data);
 }
 
-/* 每 100 ms 查询实际位置，最多等待 3 秒。 */
-HAL_StatusTypeDef RS01_ReadPosition(float *position_rad)
+static HAL_StatusTypeDef WriteFloat(uint16_t index, float value)
 {
-    if (position_rad == NULL) return HAL_ERROR;
-    const uint8_t request[8] = {0x19U, 0x70U, 0, 0, 0, 0, 0, 0};
+    return WriteFloatTo(RS01_MOTOR_ID, index, value);
+}
+
+static HAL_StatusTypeDef ReadParameter(MotorControlContext &motor, uint16_t index, float *value)
+{
+    const uint8_t request[8] = {(uint8_t)index, (uint8_t)(index >> 8), 0, 0, 0, 0, 0, 0};
+    HAL_StatusTypeDef status = SendFrameTo(motor.motor_id, 0x11U, request);
+    if (status != HAL_OK) return status;
     const uint32_t start = HAL_GetTick();
-    uint32_t last_request = start - 100U;
-    while ((uint32_t)(HAL_GetTick() - start) < 3000U)
+    uint32_t request_tick = start;
+    do
     {
-        if ((uint32_t)(HAL_GetTick() - last_request) >= 100U)
+        if ((uint32_t)(HAL_GetTick() - request_tick) >= 100U)
         {
-            HAL_StatusTypeDef status = SendFrame(0x11U, request);
+            status = SendFrameTo(motor.motor_id, 0x11U, request);
             if (status != HAL_OK) return status;
-            last_request = HAL_GetTick();
+            request_tick = HAL_GetTick();
         }
         while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
         {
             FDCAN_RxHeaderTypeDef header;
             uint8_t data[8];
-            HAL_StatusTypeDef status = HAL_FDCAN_GetRxMessage(
-                &hfdcan2, FDCAN_RX_FIFO0, &header, data);
+            status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
             if (status != HAL_OK) return status;
-            if (header.IdType == FDCAN_EXTENDED_ID &&
-                header.RxFrameType == FDCAN_DATA_FRAME &&
-                header.DataLength == FDCAN_DLC_BYTES_8 &&
-                ((header.Identifier >> 24) & 0x1FU) == 0x11U &&
-                ((header.Identifier >> 8) & 0xFFU) == MOTOR_ID &&
-                (header.Identifier & 0xFFU) == MASTER_ID &&
-                data[0] == 0x19U && data[1] == 0x70U)
+            if (!IsMotorReply(header, motor)) continue;
+            status = ProcessMotorReply(motor, header, data);
+            if (status != HAL_OK) return status;
+            if (((header.Identifier >> 24) & 0x1FU) == 0x11U &&
+                data[0] == (uint8_t)index && data[1] == (uint8_t)(index >> 8))
             {
-                memcpy(position_rad, &data[4], sizeof(*position_rad));
-                return HAL_OK;
+                if (index == 0x7005U) *value = (float)data[4];
+                else memcpy(value, &data[4], sizeof(*value));
+                /* Reject non-finite or unreasonable values. */
+                return (*value >= -100000.0f && *value <= 100000.0f) ? HAL_OK : HAL_ERROR;
             }
         }
         HAL_Delay(1U);
-    }
+    } while ((uint32_t)(HAL_GetTick() - start) < 500U);
     return HAL_TIMEOUT;
+}
+
+HAL_StatusTypeDef RS01_ReadPosition(float *position_rad)
+{
+    if (position_rad == NULL) return HAL_ERROR;
+    return ReadParameter(default_motor, 0x7019U, position_rad);
 }
 
 HAL_StatusTypeDef RS01_SetCspMode(void)
 {
-    /* 0x7005 为 uint8 模式参数，5 表示 CSP。 */
     const uint8_t data[8] = {0x05U, 0x70U, 0, 0, 5U, 0, 0, 0};
     return SendFrame(0x12U, data);
 }
@@ -1150,34 +1170,31 @@ HAL_StatusTypeDef RS01_SetPosition(float position_rad)
 
 HAL_StatusTypeDef RS01_SpeedControl(float speed_rad_s, float current_limit_a)
 {
+    default_motor.feedback_status = HAL_OK;
     if (!(speed_rad_s >= -44.0f && speed_rad_s <= 44.0f) ||
         !(current_limit_a > 0.0f && current_limit_a <= 23.0f)) return HAL_ERROR;
 
-    /* 恢复 0x06 电机已验证的启动流程：先查询位置，确认电机就绪。 */
-    rs01_speed_stage = 0U;
+    /* Confirm that the configured motor is ready. */
     float initial_position;
     HAL_StatusTypeDef status = RS01_ReadPosition(&initial_position);
     if (status != HAL_OK) return status;
 
     /* 先失能，再配置速度模式。 */
-    rs01_speed_stage = 1U;
     const uint8_t stop[8] = {0};
     status = SendFrame(0x04U, stop);
     if (status != HAL_OK) return status;
     HAL_Delay(20U);
 
     const uint8_t mode[8] = {0x05U, 0x70U, 0, 0, 2U, 0, 0, 0};
-    rs01_speed_stage = 2U;
     status = SendFrame(0x12U, mode);
     if (status != HAL_OK) return status;
     HAL_Delay(20U);
     /* 等待真正的模式读回，不能仅靠固定延时。 */
-    rs01_speed_stage = 3U;
-    rs01_motor.drw.run_mode.data = -1.0f;
+    default_motor.run_mode = -1.0f;
     const uint8_t mode_request[8] = {0x05U, 0x70U, 0, 0, 0, 0, 0, 0};
     uint32_t wait_start = HAL_GetTick();
     uint32_t request_tick = wait_start - 100U;
-    while (rs01_motor.drw.run_mode.data != 2.0f)
+    while (default_motor.run_mode != 2.0f)
     {
         if ((uint32_t)(HAL_GetTick() - request_tick) >= 100U)
         {
@@ -1191,20 +1208,19 @@ HAL_StatusTypeDef RS01_SpeedControl(float speed_rad_s, float current_limit_a)
     }
 
     /* 排空旧状态后使能；只接受使能之后收到的新运行状态。 */
-    rs01_speed_stage = 4U;
     bool running = false;
     for (uint32_t attempt = 0; attempt < 3U && !running; ++attempt)
     {
         RS01_PollFeedback();
-        const uint32_t previous_count = rs01_status_rx_count;
+        const uint32_t previous_count = default_motor.status_rx_count;
         status = RS01_Enable();
         if (status != HAL_OK) return status;
         wait_start = HAL_GetTick();
         while ((uint32_t)(HAL_GetTick() - wait_start) < 300U)
         {
             RS01_PollFeedback();
-            if (rs01_status_rx_count != previous_count &&
-                rs01_motor.Pos_Info.pattern == 2)
+            if (default_motor.status_rx_count != previous_count &&
+                default_motor.pattern == 2)
             {
                 running = true;
                 break;
@@ -1214,7 +1230,6 @@ HAL_StatusTypeDef RS01_SpeedControl(float speed_rad_s, float current_limit_a)
     }
     if (!running) return HAL_TIMEOUT;
 
-    rs01_speed_stage = 5U;
     status = WriteFloat(0x7018U, current_limit_a);
     if (status != HAL_OK) return status;
     HAL_Delay(10U);
@@ -1225,6 +1240,235 @@ HAL_StatusTypeDef RS01_SpeedControl(float speed_rad_s, float current_limit_a)
     if (status != HAL_OK) return status;
     HAL_Delay(10U);
     status = WriteFloat(0x700AU, speed_rad_s);
-    if (status == HAL_OK) rs01_speed_stage = 6U;
     return status;
+}
+
+
+static HAL_StatusTypeDef VerifyTurnLimits(MotorControlContext &motor, float speed_rad_s)
+{
+    float mode, current_limit, max_speed;
+    HAL_StatusTypeDef status = ReadParameter(motor, 0x7005U, &mode);
+    if (status != HAL_OK) return status;
+    status = ReadParameter(motor, 0x7018U, &current_limit);
+    if (status != HAL_OK) return status;
+    status = ReadParameter(motor, 0x7024U, &max_speed);
+    if (status != HAL_OK) return status;
+    if (mode != 1.0f || !(current_limit > 0.0f &&
+        current_limit >= RS01_MOVE_CURRENT_LIMIT_A - 0.001f &&
+        current_limit <= RS01_MOVE_CURRENT_LIMIT_A + 0.001f) ||
+        !(max_speed > 0.0f && max_speed <= speed_rad_s + 0.001f)) return HAL_ERROR;
+    return HAL_OK;
+}
+
+/* Two independent configured sessions; segment waits are still blocking. */
+struct MotionSession {
+    MotorControlContext motor;
+    bool allocated;
+    bool ready;
+    float speed_rad_s;
+    float target_position;
+    MotionSession() : motor(0U), allocated(false), ready(false),
+                      speed_rad_s(0.0f), target_position(0.0f) {}
+};
+static MotionSession motion_sessions[2];
+
+static MotionSession *FindMotionSession(uint8_t motor_id)
+{
+    for (uint32_t i = 0; i < 2U; ++i)
+        if (motion_sessions[i].allocated && motion_sessions[i].motor.motor_id == motor_id)
+            return &motion_sessions[i];
+    return NULL;
+}
+
+static HAL_StatusTypeDef StopMotion(uint8_t motor_id)
+{
+    const uint8_t stop[8] = {0};
+    HAL_StatusTypeDef status = HAL_ERROR;
+    for (uint32_t attempt = 0; attempt < 3U; ++attempt)
+    {
+        status = SendFrameTo(motor_id, 0x04U, stop);
+        if (status == HAL_OK) break;
+        HAL_Delay(10U);
+    }
+    return status;
+}
+
+static HAL_StatusTypeDef PrepareMotion(MotionSession &session)
+{
+    MotorControlContext &motor = session.motor;
+    const float speed_rad_s = session.speed_rad_s;
+    const uint8_t stop[8] = {0};
+    HAL_StatusTypeDef status = SendFrameTo(motor.motor_id, 0x04U, stop);
+    if (status != HAL_OK) return status;
+    HAL_Delay(20U);
+    float position;
+    status = ReadParameter(motor, 0x7019U, &position);
+    if (status != HAL_OK) return status;
+
+    const uint8_t mode[8] = {0x05U, 0x70U, 0, 0, 1U, 0, 0, 0};
+    status = SendFrameTo(motor.motor_id, 0x12U, mode); /* PP position mode */
+    if (status != HAL_OK) return status;
+    motor.run_mode = -1.0f;
+    const uint8_t mode_request[8] = {0x05U, 0x70U, 0, 0, 0, 0, 0, 0};
+    const uint32_t mode_start = HAL_GetTick();
+    uint32_t query_tick = mode_start - 100U;
+    while (motor.run_mode != 1.0f)
+    {
+        if ((uint32_t)(HAL_GetTick() - query_tick) >= 100U)
+        {
+            status = SendFrameTo(motor.motor_id, 0x11U, mode_request);
+            if (status != HAL_OK) return status;
+            query_tick = HAL_GetTick();
+        }
+        PollMotorFeedback(motor);
+        if (motor.feedback_status != HAL_OK) return motor.feedback_status;
+        if ((uint32_t)(HAL_GetTick() - mode_start) >= 1000U) return HAL_TIMEOUT;
+        HAL_Delay(1U);
+    }
+    status = WriteFloatTo(motor.motor_id, 0x7018U, RS01_MOVE_CURRENT_LIMIT_A); /* Current limit, A */
+    if (status != HAL_OK) return status;
+    status = WriteFloatTo(motor.motor_id, 0x7024U, speed_rad_s); /* PP speed, rad/s */
+    if (status != HAL_OK) return status;
+    status = WriteFloatTo(motor.motor_id, 0x7025U, RS01_MOVE_ACCEL_RAD_S2); /* PP acceleration, rad/s^2 */
+    if (status != HAL_OK) return status;
+    status = VerifyTurnLimits(motor, speed_rad_s);
+    if (status != HAL_OK) return status;
+    /* Seed the current position so enabling cannot use an old destination. */
+    status = WriteFloatTo(motor.motor_id, 0x7016U, position);
+    if (status != HAL_OK) return status;
+    PollMotorFeedback(motor);
+    if (motor.feedback_status != HAL_OK) return motor.feedback_status;
+    const uint32_t previous_count = motor.status_rx_count;
+    status = SendFrameTo(motor.motor_id, 0x03U, stop);
+    if (status != HAL_OK) return status;
+    const uint32_t enable_start = HAL_GetTick();
+    do
+    {
+        PollMotorFeedback(motor);
+        if (motor.feedback_status != HAL_OK) return motor.feedback_status;
+        if (motor.status_rx_count != previous_count && motor.pattern == 2) break;
+        if ((uint32_t)(HAL_GetTick() - enable_start) >= 500U) return HAL_TIMEOUT;
+        HAL_Delay(1U);
+    } while (true);
+    if ((motor.status_rx_id & 0x003F0000UL) != 0U) return HAL_ERROR;
+    session.target_position = position;
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef RS01_MotionEnd(uint8_t motor_id)
+{
+    HAL_StatusTypeDef status = StopMotion(motor_id);
+    MotionSession *session = FindMotionSession(motor_id);
+    if (session != NULL)
+    {
+        session->ready = false;
+        session->allocated = false;
+    }
+    return status;
+}
+
+HAL_StatusTypeDef RS01_MotionBegin(uint8_t motor_id, float speed_rad_s)
+{
+    if (!(RS01_MOVE_CURRENT_LIMIT_A > 0.0f && RS01_MOVE_CURRENT_LIMIT_A <= 23.0f))
+        return HAL_ERROR;
+    if (!(speed_rad_s > 0.0f && speed_rad_s <= 44.0f)) return HAL_ERROR;
+    if (FindMotionSession(motor_id) != NULL) return HAL_BUSY;
+    MotionSession *session = NULL;
+    for (uint32_t i = 0; i < 2U; ++i)
+        if (!motion_sessions[i].allocated) { session = &motion_sessions[i]; break; }
+    if (session == NULL) return HAL_BUSY;
+    session->motor = MotorControlContext(motor_id);
+    session->allocated = true;
+    session->ready = false;
+    session->speed_rad_s = speed_rad_s;
+    HAL_StatusTypeDef status = PrepareMotion(*session);
+    if (status != HAL_OK)
+    {
+        RS01_MotionEnd(motor_id);
+        return status;
+    }
+    session->ready = true;
+    return HAL_OK;
+}
+
+static HAL_StatusTypeDef ExecuteMotionSegment(MotionSession &session, float turns)
+{
+    MotorControlContext &motor = session.motor;
+    const float start_position = session.target_position;
+    const float target_position = start_position + turns * 6.28318530718f;
+    if (!(target_position >= -100000.0f && target_position <= 100000.0f)) return HAL_ERROR;
+    const float distance = (turns > 0.0f ? turns : -turns) * 6.28318530718f;
+    const float duration_ms = (distance / session.speed_rad_s +
+        2.0f * session.speed_rad_s / RS01_MOVE_ACCEL_RAD_S2 + 5.0f) * 1000.0f;
+    if (!(duration_ms > 0.0f && duration_ms <= 2147483000.0f)) return HAL_ERROR;
+    const uint32_t timeout_ms = (uint32_t)duration_ms;
+    PollMotorFeedback(motor);
+    if (motor.feedback_status != HAL_OK) return motor.feedback_status;
+    HAL_StatusTypeDef status = WriteFloatTo(motor.motor_id, 0x7016U, target_position);
+    if (status != HAL_OK) return status;
+    const uint32_t move_start = HAL_GetTick();
+    float value;
+    status = ReadParameter(motor, 0x7016U, &value);
+    if (status != HAL_OK) return status;
+    if (!(value >= target_position - 0.01f && value <= target_position + 0.01f))
+        return HAL_ERROR;
+    uint32_t settled = 0U;
+    do
+    {
+        float position;
+        status = ReadParameter(motor, 0x7019U, &position);
+        if (status != HAL_OK) return status;
+        if (turns > 0.0f)
+        {
+            if (position < start_position - 0.03f || position > target_position + 0.03f)
+                return HAL_ERROR;
+        }
+        else
+        {
+            if (position > start_position + 0.03f || position < target_position - 0.03f)
+                return HAL_ERROR;
+        }
+        const float error = target_position - position;
+        if (error >= -0.01f && error <= 0.01f)
+        {
+            /* Require low measured speed before allowing the next reversal. */
+            float velocity;
+            status = ReadParameter(motor, 0x701BU, &velocity);
+            if (status != HAL_OK) return status;
+            if (velocity >= -0.03f && velocity <= 0.03f) ++settled;
+            else settled = 0U;
+        }
+        else settled = 0U;
+        if (settled >= 3U)
+        {
+            session.target_position = target_position;
+            return HAL_OK;
+        }
+        if ((uint32_t)(HAL_GetTick() - move_start) >= timeout_ms) return HAL_TIMEOUT;
+        HAL_Delay(20U);
+    } while (true);
+}
+
+HAL_StatusTypeDef RS01_MotionMoveTurns(uint8_t motor_id, float turns)
+{
+    MotionSession *session = FindMotionSession(motor_id);
+    if (session == NULL || !session->ready) return HAL_ERROR;
+    HAL_StatusTypeDef status;
+    if (!(turns >= -15000.0f && turns <= 15000.0f)) status = HAL_ERROR;
+    else if (turns == 0.0f) return HAL_OK;
+    else status = ExecuteMotionSegment(*session, turns);
+    if (status != HAL_OK) RS01_MotionEnd(motor_id);
+    return status;
+}
+
+HAL_StatusTypeDef RS01_MoveTurns(uint8_t motor_id, float turns, float speed_rad_s)
+{
+    if (!(turns >= -15000.0f && turns <= 15000.0f) ||
+        !(speed_rad_s > 0.0f && speed_rad_s <= 44.0f)) return HAL_ERROR;
+    if (turns == 0.0f) return HAL_OK;
+    HAL_StatusTypeDef status = RS01_MotionBegin(motor_id, speed_rad_s);
+    if (status != HAL_OK) return status;
+    status = RS01_MotionMoveTurns(motor_id, turns);
+    if (status != HAL_OK) return status; /* Segment failure already disables. */
+    return RS01_MotionEnd(motor_id);
 }

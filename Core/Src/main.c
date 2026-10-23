@@ -45,7 +45,6 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-volatile HAL_StatusTypeDef rs01_speed_status = HAL_BUSY;
 
 /* USER CODE END PV */
 
@@ -95,14 +94,11 @@ int main(void)
   MX_GPIO_Init();
   MX_FDCAN2_Init();
   /* USER CODE BEGIN 2 */
-  /* PC13 拉高供电；固定控制 CAN ID 0x06 的电机。 */
+
   if (FDCAN2_ConfigureRxFilters() != HAL_OK) Error_Handler();
   if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) Error_Handler();
-  HAL_Delay(1000U);
-
-  /* 恢复已验证参数：0.2 rad/s、限流 0.5 A，持续单向转动。 */
-  rs01_speed_status = RS01_SpeedControl(0.2f, 0.5f);
-  if (rs01_speed_status != HAL_OK) Error_Handler();
+  /* Allow motor startup/configuration to finish before addressed queries. */
+  HAL_Delay(3000U);
 
   /* USER CODE END 2 */
 
@@ -113,12 +109,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  if (RS01_SpeedControl(1.0f, 0.5f)!= HAL_OK) Error_Handler();
-  HAL_Delay(1000*5U);
-  if (RS01_SpeedControl(-1.0f, 0.5f)!= HAL_OK) Error_Handler();
-  HAL_Delay(1000*5U);
     RS01_PollFeedback();
-    HAL_Delay(1U);
+    HAL_Delay(10U);
   }
   /* USER CODE END 3 */
 }

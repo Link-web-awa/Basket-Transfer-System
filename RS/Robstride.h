@@ -3,6 +3,17 @@
 
 #include "stm32h7xx_hal.h"
 
+/* Default motor for legacy C APIs; per-motion APIs take an explicit ID. */
+#define RS01_MOTOR_ID 0x05U
+#define RS01_MOTOR_1_ID 0x05U
+#define RS01_MOTOR_2_ID 0x07U
+
+/* PP acceleration used by RS01_MoveTurns(), in rad/s^2. */
+#define RS01_MOVE_ACCEL_RAD_S2 1.0f
+
+/* Position-motion current limit in A; valid range: (0, 23]. */
+#define RS01_MOVE_CURRENT_LIMIT_A 1.0f
+
 #ifdef __cplusplus
 
  #define Set_mode 		 'j'
@@ -119,7 +130,7 @@ public:
     RobStride_Motor(uint8_t CAN_Id, bool MIT_mode);
     RobStride_Motor(float (*offset)(float), uint8_t CAN_Id, bool MIT_mode);
     void RobStride_Motor_Analysis(uint8_t *data, uint32_t identifier);
-    void Enable_Motor();                 // 按本地协议标志选择报文
+    void Enable_Motor();                 //按本地协议标志选择报文
     void Disenable_Motor(uint8_t clear_error);
     bool Get_MIT_Mode();
     MIT_TYPE get_MIT_Type();
@@ -163,6 +174,8 @@ extern "C" {
 /* main.c 使用的上电运动接口；单位为 rad、rad/s。 */
 HAL_StatusTypeDef RS01_ReadPosition(float *position_rad);
 /* 扫描私有协议设备，返回首个回复的 CAN ID；不修改电机配置。 */
+/* Single connected motor: two matching UID replies plus a run-mode read reply.
+   On failure, *motor_id remains 0xFF; no motion or configuration writes. */
 HAL_StatusTypeDef RS01_FindMotorId(uint8_t *motor_id);
 HAL_StatusTypeDef RS01_SetCspMode(void);
 HAL_StatusTypeDef RS01_SetSpeedLimit(float speed_rad_s);
@@ -170,6 +183,16 @@ HAL_StatusTypeDef RS01_Enable(void);
 HAL_StatusTypeDef RS01_SetPosition(float position_rad);
 /* 私有协议速度控制：切换模式、限流、使能并持续转动；速度设 0 可停车。 */
 HAL_StatusTypeDef RS01_SpeedControl(float speed_rad_s, float current_limit_a);
+/* Relative output-shaft motion for motor_id: signed turns, positive speed in rad/s (0,44].
+   Blocks until arrival/error, then attempts disable; current limit uses RS01_MOVE_CURRENT_LIMIT_A.
+   Caller must enforce available travel. Blocking: call motors sequentially, not concurrently. */
+HAL_StatusTypeDef RS01_MoveTurns(uint8_t motor_id, float turns, float speed_rad_s);
+/* Configure/enable once, run relative segments while holding between them,
+   then disable explicitly. MoveTurns blocks; this is not dual-axis synchronization.
+   Speed is rad/s; current limit uses RS01_MOVE_CURRENT_LIMIT_A. A segment failure attempts disable. */
+HAL_StatusTypeDef RS01_MotionBegin(uint8_t motor_id, float speed_rad_s);
+HAL_StatusTypeDef RS01_MotionMoveTurns(uint8_t motor_id, float turns);
+HAL_StatusTypeDef RS01_MotionEnd(uint8_t motor_id);
 void RS01_PollFeedback(void);
 
 #ifdef __cplusplus
