@@ -107,7 +107,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
+    
     /* USER CODE BEGIN 3 */
     RS01_PollFeedback();
     HAL_Delay(10U);
