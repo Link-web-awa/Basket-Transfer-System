@@ -22,6 +22,34 @@
 
 /* USER CODE BEGIN 0 */
 
+/* Single ISR producer / single foreground consumer. Drop newest on overflow. */
+#define FDCAN2_RX_QUEUE_SIZE 64U
+typedef struct {
+  FDCAN_RxHeaderTypeDef header;
+  uint8_t data[8];
+} FDCAN2_RxFrame;
+static FDCAN2_RxFrame rx_queue[FDCAN2_RX_QUEUE_SIZE];
+static volatile uint32_t rx_head;
+static volatile uint32_t rx_tail;
+volatile uint32_t fdcan2_rx_dropped;
+
+uint32_t FDCAN2_RxPending(void)
+{
+  return rx_head != rx_tail;
+}
+
+HAL_StatusTypeDef FDCAN2_RxPop(FDCAN_RxHeaderTypeDef *header, uint8_t data[8])
+{
+  uint32_t tail = rx_tail;
+  if (tail == rx_head) return HAL_ERROR;
+  __DMB();
+  *header = rx_queue[tail].header;
+  for (uint32_t i = 0; i < 8U; ++i) data[i] = rx_queue[tail].data[i];
+  __DMB();
+  rx_tail = (tail + 1U) % FDCAN2_RX_QUEUE_SIZE;
+  return HAL_OK;
+}
+
 /* USER CODE END 0 */
 
 FDCAN_HandleTypeDef hfdcan2;
@@ -109,6 +137,8 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* fdcanHandle)
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN FDCAN2_MspInit 1 */
+    HAL_NVIC_SetPriority(FDCAN2_IT0_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FDCAN2_IT0_IRQn);
 
   /* USER CODE END FDCAN2_MspInit 1 */
   }
@@ -132,6 +162,7 @@ void HAL_FDCAN_MspDeInit(FDCAN_HandleTypeDef* fdcanHandle)
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_5|GPIO_PIN_6);
 
   /* USER CODE BEGIN FDCAN2_MspDeInit 1 */
+    HAL_NVIC_DisableIRQ(FDCAN2_IT0_IRQn);
 
   /* USER CODE END FDCAN2_MspDeInit 1 */
   }

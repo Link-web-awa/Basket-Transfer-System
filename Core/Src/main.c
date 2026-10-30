@@ -24,6 +24,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "../../RS/Robstride.h"
+#include "RS01.h"
 
 /* USER CODE END Includes */
 
@@ -97,21 +98,53 @@ int main(void)
 
   if (FDCAN2_ConfigureRxFilters() != HAL_OK) Error_Handler();
   if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) Error_Handler();
+  if (HAL_FDCAN_ActivateNotification(&hfdcan2,
+      FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0U) != HAL_OK) Error_Handler();
   /* Allow motor startup/configuration to finish before addressed queries. */
   HAL_Delay(3000U);
-
+  RS01_Init();
+  HAL_Delay(1000);
   /* USER CODE END 2 */
-
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+uint8_t left_started = 0U;
+uint8_t right_started = 0U;
   while (1)
   {
     /* USER CODE END WHILE */
-    
     /* USER CODE BEGIN 3 */
-    RS01_PollFeedback();
-    HAL_Delay(10U);
-  }
+    RS01_Task();
+
+    if (Motor_left.init_step == RS01_INIT_READY &&
+        Motor_right.init_step == RS01_INIT_READY &&
+        Motor_left.state != RS01_FAULT &&
+        Motor_right.state != RS01_FAULT &&
+        Motor_left.state != RS01_STOPPING &&
+        Motor_right.state != RS01_STOPPING)
+    {
+        if (!left_started &&
+            Motor_left.state == RS01_IDLE)
+        {
+            HAL_StatusTypeDef status =
+                RS01_StartMove(&Motor_left, 2.0f, 3.0f);
+
+            if (status == HAL_OK)
+                left_started = 1U;
+        }
+
+        if (!right_started &&
+            Motor_right.state == RS01_IDLE)
+        {
+            HAL_StatusTypeDef status =
+                RS01_StartMove(&Motor_right, 2.0f, 3.0f);
+
+            if (status == HAL_OK)
+                right_started = 1U;
+        }
+    }
+
+    HAL_Delay(1U);
+}
   /* USER CODE END 3 */
 }
 

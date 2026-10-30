@@ -42,6 +42,10 @@ void MX_FDCAN2_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 HAL_StatusTypeDef FDCAN2_ConfigureRxFilters(void);
+/* Foreground-only queue consumer; hardware FIFO0 is read only by the ISR. */
+uint32_t FDCAN2_RxPending(void);
+HAL_StatusTypeDef FDCAN2_RxPop(FDCAN_RxHeaderTypeDef *header, uint8_t data[8]);
+extern volatile uint32_t fdcan2_rx_dropped;
 
 /* USER CODE END Prototypes */
 

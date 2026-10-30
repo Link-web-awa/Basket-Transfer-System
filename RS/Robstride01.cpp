@@ -1,6 +1,5 @@
 #include "Robstride.h"
 #include "string.h"
-
 #include "fdcan.h"
 
 static FDCAN_HandleTypeDef &hcan = hfdcan2;
@@ -813,7 +812,7 @@ void RobStride_Motor::RobStride_Motor_ProactiveEscalationSet(uint8_t F_CMD)
 	txdata[4] = 0x05;
 	txdata[5] = 0x06;
 	txdata[6] = F_CMD;
-	txdata[7] = 0x08;	//这一字节无所谓，填什么都可以，这里写的是0x08
+	txdata[7] = 0x00; // Byte7: follow the protocol example.
   HAL_CAN_AddTxMessage(&hcan, &TxMessage, txdata, &Mailbox); // 发送CAN消息
 }
 
@@ -939,13 +938,13 @@ static HAL_StatusTypeDef ProcessMotorReply(MotorControlContext &motor, const FDC
     return HAL_OK;
 }
 
-static void PollMotorFeedback(MotorControlContext &motor)
+static void ProcessQueuedMotorFeedback(MotorControlContext &motor)
 {
-    while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+    while (FDCAN2_RxPending() > 0U)
     {
         FDCAN_RxHeaderTypeDef header;
         uint8_t data[8];
-        if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data) != HAL_OK)
+        if (FDCAN2_RxPop(&header, data) != HAL_OK)
         {
             motor.feedback_status = HAL_ERROR;
             return;
@@ -956,7 +955,7 @@ static void PollMotorFeedback(MotorControlContext &motor)
 
 void RS01_PollFeedback(void)
 {
-    PollMotorFeedback(default_motor);
+    ProcessQueuedMotorFeedback(default_motor);
 }
 
 static HAL_StatusTypeDef SendFrameTo(uint8_t target_id, uint8_t type, const uint8_t data[8])
@@ -1007,9 +1006,9 @@ static HAL_StatusTypeDef QueryMotorUniqueId(uint8_t motor_id, uint8_t unique_id[
     FDCAN_RxHeaderTypeDef header;
     uint8_t data[8];
     /* Clear queued startup broadcasts before every new addressed query. */
-    while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+    while (FDCAN2_RxPending() > 0U)
     {
-        HAL_StatusTypeDef status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+        HAL_StatusTypeDef status = FDCAN2_RxPop(&header, data);
         if (status != HAL_OK) return status;
     }
     const uint8_t request[8] = {0};
@@ -1018,9 +1017,9 @@ static HAL_StatusTypeDef QueryMotorUniqueId(uint8_t motor_id, uint8_t unique_id[
     const uint32_t start = HAL_GetTick();
     do
     {
-        while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+        while (FDCAN2_RxPending() > 0U)
         {
-            status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+            status = FDCAN2_RxPop(&header, data);
             if (status != HAL_OK) return status;
             if (header.IdType == FDCAN_EXTENDED_ID &&
                 header.RxFrameType == FDCAN_DATA_FRAME &&
@@ -1045,11 +1044,11 @@ static HAL_StatusTypeDef ConfirmMotorParameterReply(uint8_t motor_id)
     const uint32_t start = HAL_GetTick();
     do
     {
-        while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+        while (FDCAN2_RxPending() > 0U)
         {
             FDCAN_RxHeaderTypeDef header;
             uint8_t data[8];
-            status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+            status = FDCAN2_RxPop(&header, data);
             if (status != HAL_OK) return status;
             const uint32_t expected_id = (0x11UL << 24) | ((uint32_t)motor_id << 8) | MASTER_ID;
             if (header.IdType == FDCAN_EXTENDED_ID &&
@@ -1116,11 +1115,11 @@ static HAL_StatusTypeDef ReadParameter(MotorControlContext &motor, uint16_t inde
             if (status != HAL_OK) return status;
             request_tick = HAL_GetTick();
         }
-        while (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO0) > 0U)
+        while (FDCAN2_RxPending() > 0U)
         {
             FDCAN_RxHeaderTypeDef header;
             uint8_t data[8];
-            status = HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO0, &header, data);
+            status = FDCAN2_RxPop(&header, data);
             if (status != HAL_OK) return status;
             if (!IsMotorReply(header, motor)) continue;
             status = ProcessMotorReply(motor, header, data);
@@ -1320,7 +1319,7 @@ static HAL_StatusTypeDef PrepareMotion(MotionSession &session)
             if (status != HAL_OK) return status;
             query_tick = HAL_GetTick();
         }
-        PollMotorFeedback(motor);
+        ProcessQueuedMotorFeedback(motor);
         if (motor.feedback_status != HAL_OK) return motor.feedback_status;
         if ((uint32_t)(HAL_GetTick() - mode_start) >= 1000U) return HAL_TIMEOUT;
         HAL_Delay(1U);
@@ -1336,7 +1335,7 @@ static HAL_StatusTypeDef PrepareMotion(MotionSession &session)
     /* Seed the current position so enabling cannot use an old destination. */
     status = WriteFloatTo(motor.motor_id, 0x7016U, position);
     if (status != HAL_OK) return status;
-    PollMotorFeedback(motor);
+    ProcessQueuedMotorFeedback(motor);
     if (motor.feedback_status != HAL_OK) return motor.feedback_status;
     const uint32_t previous_count = motor.status_rx_count;
     status = SendFrameTo(motor.motor_id, 0x03U, stop);
@@ -1344,7 +1343,7 @@ static HAL_StatusTypeDef PrepareMotion(MotionSession &session)
     const uint32_t enable_start = HAL_GetTick();
     do
     {
-        PollMotorFeedback(motor);
+        ProcessQueuedMotorFeedback(motor);
         if (motor.feedback_status != HAL_OK) return motor.feedback_status;
         if (motor.status_rx_count != previous_count && motor.pattern == 2) break;
         if ((uint32_t)(HAL_GetTick() - enable_start) >= 500U) return HAL_TIMEOUT;
@@ -1402,7 +1401,7 @@ static HAL_StatusTypeDef ExecuteMotionSegment(MotionSession &session, float turn
         2.0f * session.speed_rad_s / RS01_MOVE_ACCEL_RAD_S2 + 5.0f) * 1000.0f;
     if (!(duration_ms > 0.0f && duration_ms <= 2147483000.0f)) return HAL_ERROR;
     const uint32_t timeout_ms = (uint32_t)duration_ms;
-    PollMotorFeedback(motor);
+    ProcessQueuedMotorFeedback(motor);
     if (motor.feedback_status != HAL_OK) return motor.feedback_status;
     HAL_StatusTypeDef status = WriteFloatTo(motor.motor_id, 0x7016U, target_position);
     if (status != HAL_OK) return status;
@@ -1471,4 +1470,13 @@ HAL_StatusTypeDef RS01_MoveTurns(uint8_t motor_id, float turns, float speed_rad_
     status = RS01_MotionMoveTurns(motor_id, turns);
     if (status != HAL_OK) return status; /* Segment failure already disables. */
     return RS01_MotionEnd(motor_id);
+}
+
+RobStride_Motor RobStride_left(RS01_MOTOR_1_ID,false);
+RobStride_Motor RobStride_right(RS01_MOTOR_2_ID,false);
+
+void RS01_StartReport(void)
+{
+    RobStride_left.RobStride_Motor_ProactiveEscalationSet(1);
+    RobStride_right.RobStride_Motor_ProactiveEscalationSet(1);
 }

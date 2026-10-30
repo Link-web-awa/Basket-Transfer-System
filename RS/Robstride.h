@@ -186,14 +186,14 @@ HAL_StatusTypeDef RS01_SpeedControl(float speed_rad_s, float current_limit_a);
 /* Relative output-shaft motion for motor_id: signed turns, positive speed in rad/s (0,44].
    Blocks until arrival/error, then attempts disable; current limit uses RS01_MOVE_CURRENT_LIMIT_A.
    Caller must enforce available travel. Blocking: call motors sequentially, not concurrently. */
-HAL_StatusTypeDef RS01_MoveTurns(uint8_t motor_id, float turns, float speed_rad_s);
-/* Configure/enable once, run relative segments while holding between them,
-   then disable explicitly. MoveTurns blocks; this is not dual-axis synchronization.
-   Speed is rad/s; current limit uses RS01_MOVE_CURRENT_LIMIT_A. A segment failure attempts disable. */
+
 HAL_StatusTypeDef RS01_MotionBegin(uint8_t motor_id, float speed_rad_s);
 HAL_StatusTypeDef RS01_MotionMoveTurns(uint8_t motor_id, float turns);
 HAL_StatusTypeDef RS01_MotionEnd(uint8_t motor_id);
+/* Process the software receive queue; never reads hardware FIFO0. */
 void RS01_PollFeedback(void);
+void RS01_StartReport(void);//启动电机主动上报
+
 
 #ifdef __cplusplus
 }
