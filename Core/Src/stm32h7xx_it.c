@@ -41,6 +41,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
+extern TIM_HandleTypeDef htim6;
 
 /* USER CODE END PV */
 
@@ -213,5 +214,12 @@ void FDCAN2_IT0_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+void TIM6_DAC_IRQHandler(void)
+{
+    /* HAL清除中断标志后进入main.c中的周期回调，执行两个电机的位置控制。 */
+    HAL_TIM_IRQHandler(&htim6);
+}
+
 
 /* USER CODE END 1 */
