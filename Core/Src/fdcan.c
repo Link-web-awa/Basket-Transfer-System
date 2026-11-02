@@ -107,27 +107,29 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* fdcanHandle)
 {
 
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
   if(fdcanHandle->Instance==FDCAN2)
   {
   /* USER CODE BEGIN FDCAN2_MspInit 0 */
-    /* PLL1Q = 64 MHz / 32 * 129 / 2 = 129 MHz.
-       Nominal bitrate = 129 MHz / (1 * (1 + 102 + 26)) = 1 Mbit/s. */
-    RCC_PeriphCLKInitTypeDef periph_clk = {0};
-    periph_clk.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
-    periph_clk.FdcanClockSelection = RCC_FDCANCLKSOURCE_PLL;
-    if (HAL_RCCEx_PeriphCLKConfig(&periph_clk) != HAL_OK)
+
+  /* USER CODE END FDCAN2_MspInit 0 */
+
+  /** Initializes the peripherals clock
+  */
+    PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
+    PeriphClkInitStruct.FdcanClockSelection = RCC_FDCANCLKSOURCE_PLL;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
     }
 
-  /* USER CODE END CAN1_MspInit 0 */
-    /* CAN1 clock enable */
+    /* FDCAN2 clock enable */
     __HAL_RCC_FDCAN_CLK_ENABLE();
 
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    /**CAN GPIO Configuration
-    PB5     ------> CAN_RX
-    PB6     ------> CAN_TX
+    /**FDCAN2 GPIO Configuration
+    PB5     ------> FDCAN2_RX
+    PB6     ------> FDCAN2_TX
     */
     GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -136,6 +138,9 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* fdcanHandle)
     GPIO_InitStruct.Alternate = GPIO_AF9_FDCAN2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+    /* FDCAN2 interrupt Init */
+    HAL_NVIC_SetPriority(FDCAN2_IT0_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FDCAN2_IT0_IRQn);
   /* USER CODE BEGIN FDCAN2_MspInit 1 */
     HAL_NVIC_SetPriority(FDCAN2_IT0_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(FDCAN2_IT0_IRQn);
@@ -161,6 +166,8 @@ void HAL_FDCAN_MspDeInit(FDCAN_HandleTypeDef* fdcanHandle)
     */
     HAL_GPIO_DeInit(GPIOB, GPIO_PIN_5|GPIO_PIN_6);
 
+    /* FDCAN2 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(FDCAN2_IT0_IRQn);
   /* USER CODE BEGIN FDCAN2_MspDeInit 1 */
     HAL_NVIC_DisableIRQ(FDCAN2_IT0_IRQn);
 

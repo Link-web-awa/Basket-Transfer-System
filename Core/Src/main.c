@@ -19,12 +19,15 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "fdcan.h"
+#include "tim.h"
+#include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "../../RS/Robstride.h"
 #include "RS01.h"
+#include "MINIF.h"
 
 /* USER CODE END Includes */
 
@@ -46,8 +49,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-TIM_HandleTypeDef htim6;
-volatile uint8_t step = 0U; // 正反转测试阶段，放在全局便于调试器监视
+uint8_t Position_control=0;
 
 /* USER CODE END PV */
 
@@ -97,93 +99,38 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_FDCAN2_Init();
+  MX_UART7_Init();
+  MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
 
-  if (FDCAN2_ConfigureRxFilters() != HAL_OK) Error_Handler();
-  if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) Error_Handler();
-  if (HAL_FDCAN_ActivateNotification(&hfdcan2,
-      FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0U) != HAL_OK) Error_Handler();
-  /* 等待电机上电，然后阻塞完成两个电机的速度模式初始化。 */
-  HAL_Delay(3000U);
-  RS01_Init();
+  /* PC15为板载5V输出使能，高电平开启UART接口的受控5V电源。 */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
 
-  if (RS01_SpeedInit(&Motor_left, 2000U) != HAL_OK) Error_Handler();
-  if (RS01_SpeedInit(&Motor_right, 2000U) != HAL_OK) Error_Handler();
-
-  /* 初始化成功后才启动位置控制中断。 */
-  MX_TIM6_Init();
-  if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) Error_Handler();
+  // if (FDCAN2_ConfigureRxFilters() != HAL_OK) Error_Handler();
+  // if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) Error_Handler();
+  // if (HAL_FDCAN_ActivateNotification(&hfdcan2,
+  //     FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0U) != HAL_OK) Error_Handler();
+  // /* 等待电机上电，然后阻塞完成两个电机的速度模式初始化。 */
+  // HAL_Delay(3000U);
+  // /* 初始化成功后才启动位置控制中断。 */
+  // if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) Error_Handler();
   /* USER CODE END 2 */
 
+  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
   /* 本次实测参数：位置环使用P控制，速度和电流环由电机内部执行。 */
   Motor_left.position_kp = 1.5f;
   Motor_right.position_kp = 1.5f;
-  step = 0U;
+  LRM_t LRM0 = {0};
+  MINIF_Init();
   while (1)
   {
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
-    /* 上电测试：正转2圈 -> 两边完成 -> 反转2圈 -> 两边完成，不自动重复。 */
-    /* 任一电机故障只暂停后续命令；另一电机仍由定时器独立执行已有任务。 */
-    if (Motor_left.state == RS01_FAULT ||
-        Motor_right.state == RS01_FAULT)
-    {
+        get_LRMdata(&LRM0);
         HAL_Delay(1U);
-        continue;
-    }
-
-    switch (step)
-    {
-    case 0:
-        // 接受任务后才推进阶段；不在主循环中等待运动结束
-        rs01_debug.left_start_status = RS01_StartMove(&Motor_left, 2.0f, 2.5f);
-        if (rs01_debug.left_start_status == HAL_OK)
-            step = 1U;
-        break;
-
-    case 1:
-        // 左右电机独立启动，相同正圈数已在库内进行镜像方向转换
-        rs01_debug.right_start_status = RS01_StartMove(&Motor_right, 2.0f, 2.5f);
-        if (rs01_debug.right_start_status == HAL_OK)
-            step = 2U;
-        break;
-
-    case 2:
-        // 两边都完成正转后，才能开始反转
-        if (Motor_left.state == RS01_DONE &&
-            Motor_right.state == RS01_DONE)
-            step = 3U;
-        break;
-
-    case 3:
-        // 负圈数表示相对当前位置反转，不是指定绝对位置
-        rs01_debug.left_start_status = RS01_StartMove(&Motor_left, -2.0f, 2.5f);
-        if (rs01_debug.left_start_status == HAL_OK)
-            step = 4U;
-        break;
-
-    case 4:
-        // 右电机的反转命令也只登记一次
-        rs01_debug.right_start_status = RS01_StartMove(&Motor_right, -2.0f, 2.5f);
-        if (rs01_debug.right_start_status == HAL_OK)
-            step = 5U;
-        break;
-
-    case 5:
-        // 等待两边反转结束，期间位置环仍在TIM6中断执行
-        if (Motor_left.state == RS01_DONE &&
-            Motor_right.state == RS01_DONE)
-            step = 6U;
-        break;
-
-    case 6:
-        // 正反转测试完成，不再下发命令
-        break;
-    }
-
-    HAL_Delay(1U);
   }
   /* USER CODE END 3 */
 }
@@ -250,32 +197,16 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 
 /* TIM6：当前 APB1 不分频，定时器时钟等于 PCLK1。 */
-static void MX_TIM6_Init(void)
-{
-    uint32_t timer_clock = HAL_RCC_GetPCLK1Freq();
-    __HAL_RCC_TIM6_CLK_ENABLE();
-
-    htim6.Instance = TIM6;
-    htim6.Init.Prescaler = timer_clock / 10000U - 1U;
-    htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim6.Init.Period = 100U - 1U;  // 10kHz / 100 = 100Hz，即10ms
-    htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-
-    if (HAL_TIM_Base_Init(&htim6) != HAL_OK) Error_Handler();
-    __HAL_TIM_CLEAR_FLAG(&htim6, TIM_FLAG_UPDATE);
-
-    /* CAN接收优先级为5；控制中断为6，接收可以抢占控制。 */
-    HAL_NVIC_SetPriority(TIM6_DAC_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(TIM6_DAC_IRQn);
-}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        /* 这里只运行非阻塞位置控制，禁止延时、等待回复或重新初始化电机。 */
+        if(Position_control==1)
+        {
         RS01_PositionTask(&Motor_left);
         RS01_PositionTask(&Motor_right);
+        }
     }
 }
 
