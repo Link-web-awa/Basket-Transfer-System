@@ -1,6 +1,7 @@
 #ifndef __MINIF_H
 #define __MINIF_H
 #include "main.h"
+
 #define DISTANCE_MIN 20
 #define DISTANCE_MAX 5000  // 通讯协议规定的最大有效距离，mm
 #define CONFIDENCE_MAX 100 // 通讯协议规定的最大置信度
@@ -25,6 +26,8 @@ typedef struct
 } MINIF_DebugInfo;
 
 extern volatile MINIF_DebugInfo minif_debug;
+extern uint8_t uart7_rx_data;
+void Processing_Data(uint8_t RXdata);
 
 
 

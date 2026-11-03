@@ -117,16 +117,6 @@ recv_buf[index++] = RXdata;
 
 
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == UART7)
-    {
-        ++minif_debug.rx_count;
-        Processing_Data(uart7_rx_data);
-        minif_debug.rx_status = HAL_UART_Receive_IT(&huart7, &uart7_rx_data, 1);
-    }
-}
-
 void get_LRMdata(LRM_t* LRM)
 {
     if (LRM == NULL) return;

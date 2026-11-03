@@ -1,0 +1,26 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "D:/Keil_v5/ARM/ARMCC/include",
+                "${workspaceFolder}/Core/Inc",
+                "${workspaceFolder}/Drivers/STM32H7xx_HAL_Driver/Inc",
+                "${workspaceFolder}/Drivers/STM32H7xx_HAL_Driver/Inc/Legacy",
+                "${workspaceFolder}/Drivers/CMSIS/Device/ST/STM32H7xx/Include",
+                "${workspaceFolder}/Drivers/CMSIS/Include",
+                "${workspaceFolder}/RS",
+                "${workspaceFolder}/Hardware",
+                "${workspaceFolder}/MDK-ARM/RTE/_RS01_sample_H7"
+            ],
+            "defines": [
+                "USE_PWR_LDO_SUPPLY",
+                "USE_HAL_DRIVER",
+                "STM32H723xx"
+            ],
+            "configurationProvider": "cl.eide",
+            "mergeConfigurations": true
+        }
+    ],
+    "version": 4
+}

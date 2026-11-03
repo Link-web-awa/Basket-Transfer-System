@@ -28,6 +28,7 @@
 #include "../../RS/Robstride.h"
 #include "RS01.h"
 #include "MINIF.h"
+#include "interrupt.h"
 
 /* USER CODE END Includes */
 
@@ -101,6 +102,7 @@ int main(void)
   MX_FDCAN2_Init();
   MX_UART7_Init();
   MX_TIM6_Init();
+  MX_UART4_Init();
   /* USER CODE BEGIN 2 */
 
   /* PC15为板载5V输出使能，高电平开启UART接口的受控5V电源。 */
@@ -122,14 +124,21 @@ int main(void)
   /* 本次实测参数：位置环使用P控制，速度和电流环由电机内部执行。 */
   Motor_left.position_kp = 1.5f;
   Motor_right.position_kp = 1.5f;
-  LRM_t LRM0 = {0};
+  uint8_t Servo_Rxbuffer[32]={0};
   MINIF_Init();
+  Servo_Init();
+  HAL_Delay(1000);
+  Servo_SendCommand("#002PMOD2!");
+  HAL_Delay(1000);
+  Servo_SendCommand("#001P0000T1000!");
+  Servo_SendCommand("#002P0000T1000!");
+
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-        get_LRMdata(&LRM0);
+        Servo_getData(Servo_Rxbuffer);
         HAL_Delay(1U);
   }
   /* USER CODE END 3 */
