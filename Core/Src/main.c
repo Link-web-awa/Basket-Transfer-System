@@ -51,7 +51,7 @@
 
 /* USER CODE BEGIN PV */
 uint8_t Position_control=0;
-
+volatile uint8_t servo_zero_request = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -124,22 +124,22 @@ int main(void)
   /* 本次实测参数：位置环使用P控制，速度和电流环由电机内部执行。 */
   Motor_left.position_kp = 1.5f;
   Motor_right.position_kp = 1.5f;
-  uint8_t Servo_Rxbuffer[32]={0};
   MINIF_Init();
   Servo_Init();
   HAL_Delay(1000);
-  Servo_SendCommand("#002PMOD2!");
-  HAL_Delay(1000);
-  Servo_SendCommand("#001P0000T1000!");
-  Servo_SendCommand("#002P0000T1000!");
+
+  Servo_catch();
+  HAL_Delay(2000);
+  Servo_release();
+
+  
 
   while (1)
   {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-        Servo_getData(Servo_Rxbuffer);
-        HAL_Delay(1U);
+    
   }
   /* USER CODE END 3 */
 }

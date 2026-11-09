@@ -3,9 +3,7 @@
 
 #include "usart.h"
 
-#define  ChangeID_000to001 #000PID001!
-#define  ChangeID_000to002 #000PID002!
-#define  ChangeID_001to001 #001PID001!
+#define SERVO_POSITION_RANGE_DEG 270
 
 extern uint8_t rxByte;
 extern volatile uint8_t frameReady;
@@ -26,8 +24,19 @@ typedef struct
 
 
 void Servo_Init(void);
+HAL_StatusTypeDef Servo_position_move(uint16_t id, float position_deg, uint16_t time_ms);
+HAL_StatusTypeDef Servo_multi_position_move(
+    uint16_t id1, float position1_deg, uint16_t time1_ms,
+    uint16_t id2, float position2_deg, uint16_t time2_ms);
+HAL_StatusTypeDef Servo_set_id(uint16_t current_id, uint16_t new_id);
 HAL_StatusTypeDef Servo_SendCommand(const char *cmd);
 void Servo_getData(uint8_t* ReceivedataBuffer);
-void Servo_catch(uint8_t servo_t);
+HAL_StatusTypeDef Servo_set_mod(uint16_t id, uint8_t mode);
+HAL_StatusTypeDef Servo_set_zero(uint16_t id);
+void Servo_catch(void);
+void Servo_release(void);
 void Servo_RxByteHandler(uint8_t data);
 #endif
+
+
+
