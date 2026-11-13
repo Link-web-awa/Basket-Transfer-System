@@ -11,6 +11,8 @@ HAL_StatusTypeDef Servo_SendCommand(const char *cmd)
 {
     size_t cmd_length;
     uint32_t timeout_ms;
+    HAL_StatusTypeDef status;
+    HAL_StatusTypeDef restore_status;
 
     if (cmd == NULL)
         return HAL_ERROR;
@@ -24,13 +26,14 @@ HAL_StatusTypeDef Servo_SendCommand(const char *cmd)
                            / huart4.Init.BaudRate) + 10U;
 
     // 暂停当前接收中断
-    HAL_UART_AbortReceive(&huart4);
+    status = HAL_UART_AbortReceive(&huart4);
+    if (status != HAL_OK) return status;
 
     // 切换到发送模式
-    HAL_HalfDuplex_EnableTransmitter(&huart4);
+    status = HAL_HalfDuplex_EnableTransmitter(&huart4);
 
     // 发送 ASCII 指令
-    HAL_StatusTypeDef status = HAL_UART_Transmit(
+    if (status == HAL_OK) status = HAL_UART_Transmit(
         &huart4,
         (uint8_t *)cmd,
         (uint16_t)cmd_length,
@@ -38,12 +41,14 @@ HAL_StatusTypeDef Servo_SendCommand(const char *cmd)
     );
 
     // 切换回接收模式
-    HAL_HalfDuplex_EnableReceiver(&huart4);
+    restore_status = HAL_HalfDuplex_EnableReceiver(&huart4);
+    if (status == HAL_OK) status = restore_status;
 
     // 重新开启单字节中断接收
-    if (!frameReady)
+    if (restore_status == HAL_OK && !frameReady)
     {
-        HAL_UART_Receive_IT(&huart4, &rxByte, 1);
+        restore_status = HAL_UART_Receive_IT(&huart4, &rxByte, 1);
+        if (status == HAL_OK) status = restore_status;
     }
 
     return status;
@@ -171,14 +176,14 @@ void Servo_getData(uint8_t* ReceivedataBuffer)
    
 }
 
-void Servo_catch(void)
+HAL_StatusTypeDef Servo_catch(void)
 {
-    Servo_multi_position_move(1,90.0f,500,2,90.0f,500);
+    return Servo_multi_position_move(1,90.0f,500,2,90.0f,500);
 }
 
-void Servo_release(void)
+HAL_StatusTypeDef Servo_release(void)
 {
-    Servo_multi_position_move(1,10.0f,500,2,10.0f,500);
+    return Servo_multi_position_move(1,10.0f,500,2,10.0f,500);
 }
 
 void Servo_Init(void)

@@ -29,6 +29,7 @@
 #include "RS01.h"
 #include "MINIF.h"
 #include "interrupt.h"
+#include "basket.h"
 
 /* USER CODE END Includes */
 
@@ -52,13 +53,13 @@
 /* USER CODE BEGIN PV */
 uint8_t Position_control=0;
 volatile uint8_t servo_zero_request = 0;
+uint8_t servoRxbuffer[32];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MPU_Config(void);
 /* USER CODE BEGIN PFP */
-static void MX_TIM6_Init(void);
 
 /* USER CODE END PFP */
 
@@ -108,38 +109,30 @@ int main(void)
   /* PC15为板载5V输出使能，高电平开启UART接口的受控5V电源。 */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
 
-  // if (FDCAN2_ConfigureRxFilters() != HAL_OK) Error_Handler();
-  // if (HAL_FDCAN_Start(&hfdcan2) != HAL_OK) Error_Handler();
-  // if (HAL_FDCAN_ActivateNotification(&hfdcan2,
-  //     FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0U) != HAL_OK) Error_Handler();
-  // /* 等待电机上电，然后阻塞完成两个电机的速度模式初始化。 */
-  // HAL_Delay(3000U);
-  // /* 初始化成功后才启动位置控制中断。 */
-  // if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) Error_Handler();
+  MINIF_Init();
+  Servo_Init();
+  Basket_Init();
+  HAL_Delay(3000U);
+  // Servo_set_id(0,4);
+  // HAL_Delay(100);
+  // Servo_SendCommand("#255PID!");
+
+  // Servo_set_mod(1,1);
+  // HAL_Delay(100);
+  // Servo_SendCommand("#004PCSM!");
+  // HAL_Delay(100);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
 
-  /* 本次实测参数：位置环使用P控制，速度和电流环由电机内部执行。 */
-  Motor_left.position_kp = 1.5f;
-  Motor_right.position_kp = 1.5f;
-  MINIF_Init();
-  Servo_Init();
-  HAL_Delay(1000);
-
-  Servo_catch();
-  HAL_Delay(2000);
-  Servo_release();
-
-  
-
   while (1)
   {
     /* USER CODE END WHILE */
-
+    (void)Basket_Task();
     /* USER CODE BEGIN 3 */
-    
+    HAL_Delay(1U);
   }
   /* USER CODE END 3 */
 }
@@ -211,10 +204,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        if(Position_control==1)
+        if (Position_control == 1U)
         {
-        RS01_PositionTask(&Motor_left);
-        RS01_PositionTask(&Motor_right);
+            RS01_PositionTask(&Motor_left);
+            RS01_PositionTask(&Motor_right);
         }
     }
 }

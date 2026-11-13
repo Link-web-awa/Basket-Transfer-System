@@ -181,6 +181,13 @@ __STATIC_FORCEINLINE void SCB_EnableDCache (void)
 __STATIC_FORCEINLINE void SCB_DisableDCache (void)
 {
   #if defined (__DCACHE_PRESENT) && (__DCACHE_PRESENT == 1U)
+    /* ARMCC5 warns about the alignment attribute in GNU compatibility mode.
+     * Keep CMSIS behavior intact and silence only this declaration.
+     */
+    #if defined(__CC_ARM)
+      #pragma push
+      #pragma diag_suppress 1041
+    #endif
     struct {
     uint32_t ccsidr;
     uint32_t sets;
@@ -190,6 +197,9 @@ __STATIC_FORCEINLINE void SCB_DisableDCache (void)
        __ALIGNED(__SCB_DCACHE_LINE_SIZE)
     #endif
     ;
+    #if defined(__CC_ARM)
+      #pragma pop
+    #endif
 
     SCB->CSSELR = 0U;                       /* select Level 1 data cache */
     __DSB();

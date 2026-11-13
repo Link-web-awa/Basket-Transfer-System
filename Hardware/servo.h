@@ -33,9 +33,10 @@ HAL_StatusTypeDef Servo_SendCommand(const char *cmd);
 void Servo_getData(uint8_t* ReceivedataBuffer);
 HAL_StatusTypeDef Servo_set_mod(uint16_t id, uint8_t mode);
 HAL_StatusTypeDef Servo_set_zero(uint16_t id);
-void Servo_catch(void);
-void Servo_release(void);
+HAL_StatusTypeDef Servo_catch(void);
+HAL_StatusTypeDef Servo_release(void);
 void Servo_RxByteHandler(uint8_t data);
+void Servo_getData(uint8_t* ReceivedataBuffer);
 #endif
 
 

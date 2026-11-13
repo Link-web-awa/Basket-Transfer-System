@@ -8,6 +8,7 @@ uint8_t uart7_rx_data;
 volatile uint16_t distance_value = 0;
 volatile uint8_t confidence_value = 0;
 volatile uint8_t data_ready = 0;
+static volatile uint32_t sample_tick;
 volatile MINIF_DebugInfo minif_debug;
 
 
@@ -99,6 +100,7 @@ recv_buf[index++] = RXdata;
                 }
                 
                 // 设置数据就绪标志  Set data ready flag
+                sample_tick = HAL_GetTick();
                 data_ready = 1;
                 // 重置接收状态机  Reset state machine
                 index = 0;
@@ -131,4 +133,24 @@ void get_LRMdata(LRM_t* LRM)
     ++minif_debug.copied_count;
     }
     __set_PRIMASK(primask);
+}
+
+uint8_t MINIF_TryGetData(LRM_t *data, uint32_t *tick)
+{
+    uint8_t ready;
+    uint32_t mask;
+    if (data == NULL || tick == NULL) return 0U;
+    mask = __get_PRIMASK();
+    __disable_irq();
+    ready = data_ready;
+    if (ready)
+    {
+        data->distance = distance_value;
+        data->confidence = confidence_value;
+        *tick = sample_tick;
+        data_ready = 0U;
+        ++minif_debug.copied_count;
+    }
+    __set_PRIMASK(mask);
+    return ready;
 }

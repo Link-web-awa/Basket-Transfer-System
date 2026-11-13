@@ -34,6 +34,8 @@ void Processing_Data(uint8_t RXdata);
 
 void MINIF_Init(void);
 void get_LRMdata(LRM_t* LRM);
+/* Consume a new frame together with its actual receive timestamp. */
+uint8_t MINIF_TryGetData(LRM_t *data, uint32_t *tick);
 
 
 #endif
