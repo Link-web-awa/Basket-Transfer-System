@@ -7,6 +7,34 @@
  */
 
 Motor_t Motor_left, Motor_right;
+Motor_t Motor_Down;
+static HAL_StatusTypeDef RS01_SendFrame(uint8_t id, uint8_t type, const uint8_t data[8]);
+volatile float down_mech_position;
+volatile uint32_t down_position_tick;
+volatile uint8_t down_position_valid;
+volatile int down_run_mode = -1;
+volatile float down_iqf;
+volatile uint32_t down_iq_tick;
+volatile uint8_t down_iq_valid;
+
+HAL_StatusTypeDef RS01_RequestParameter(uint8_t id, uint16_t index)
+{
+    uint8_t data[8] = {0};
+    data[0] = (uint8_t)index; data[1] = (uint8_t)(index >> 8);
+    return RS01_SendFrame(id, 0x11U, data);
+}
+
+HAL_StatusTypeDef RS01_SetReport(uint8_t id)
+{
+    const uint8_t data[8] = {1,2,3,4,5,6,1,0};
+    return RS01_SendFrame(id, 0x18U, data);
+}
+
+HAL_StatusTypeDef RS01_DisableMotor(uint8_t id)
+{
+    const uint8_t data[8] = {0};
+    return RS01_SendFrame(id, 0x04U, data);
+}
 volatile RS01_DebugInfo rs01_debug;
 
 /* 仅保存第一次超时现场；必须在失能和覆盖反馈时间之前调用。 */
@@ -146,8 +174,11 @@ void RS01_Init(void)
 {
     uint32_t primask = __get_PRIMASK();
     __disable_irq();
-    RS01_SetDefaultConfig(&Motor_left, RS01_MOTOR_1_ID, 1);
-    RS01_SetDefaultConfig(&Motor_right, RS01_MOTOR_2_ID, -1);
+    RS01_SetDefaultConfig(&Motor_left, RS01_MOTOR_1_ID, RS01_LEFT_DIRECTION);
+    RS01_SetDefaultConfig(&Motor_right, RS01_MOTOR_2_ID, RS01_RIGHT_DIRECTION);
+    RS01_SetDefaultConfig(&Motor_Down, RS01_DOWN_MOTOR_ID, 1);
+    down_position_valid = 0U;
+    down_iq_valid = 0U;
     memset((void *)&rs01_debug, 0, sizeof(rs01_debug));
     rs01_debug.left_start_status = HAL_BUSY;
     rs01_debug.right_start_status = HAL_BUSY;
@@ -684,12 +715,42 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         {
             motor = &Motor_right;
         }
+        else if (motor_id == Motor_Down.motor_id)
+        {
+            motor = &Motor_Down;
+        }
         if (motor == NULL)
         {
             continue;
         }
 
-        if (type == 2U)
+        if (type == 0x11U && motor == &Motor_Down && data[0] == 0x05U && data[1] == 0x70U)
+        {
+            down_run_mode = data[4];
+        }
+        else if (type == 0x11U && motor == &Motor_Down && data[0] == 0x19U && data[1] == 0x70U)
+        {
+            float value;
+            memcpy(&value, &data[4], sizeof(value));
+            if (isfinite(value))
+            {
+                down_mech_position = value;
+                down_position_tick = HAL_GetTick();
+                down_position_valid = 1U;
+            }
+        }
+        else if (type == 0x11U && motor == &Motor_Down && data[0] == 0x1AU && data[1] == 0x70U)
+        {
+            float value;
+            memcpy(&value, &data[4], sizeof(value));
+            if (isfinite(value))
+            {
+                down_iqf = value;
+                down_iq_tick = HAL_GetTick();
+                down_iq_valid = 1U;
+            }
+        }
+        else if (type == 2U || type == 0x18U)
         {
             if (motor == &Motor_left) ++rs01_debug.left_count;
             else ++rs01_debug.right_count;

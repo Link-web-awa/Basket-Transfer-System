@@ -30,6 +30,7 @@
 #include "MINIF.h"
 #include "interrupt.h"
 #include "basket.h"
+#include "lift.h"
 
 /* USER CODE END Includes */
 
@@ -111,8 +112,8 @@ int main(void)
 
   MINIF_Init();
   Servo_Init();
-  Basket_Init();
   HAL_Delay(3000U);
+  (void)Basket_Init();
   // Servo_set_id(0,4);
   // HAL_Delay(100);
   // Servo_SendCommand("#255PID!");
@@ -130,8 +131,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-    (void)Basket_Task();
     /* USER CODE BEGIN 3 */
+    Basket_Task();
     HAL_Delay(1U);
   }
   /* USER CODE END 3 */
@@ -204,11 +205,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
-        if (Position_control == 1U)
-        {
-            RS01_PositionTask(&Motor_left);
-            RS01_PositionTask(&Motor_right);
-        }
+        Basket_ControlTick();
     }
 }
 

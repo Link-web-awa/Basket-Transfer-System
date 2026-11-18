@@ -63,6 +63,20 @@ typedef struct
 } Motor_t;
 
 extern Motor_t Motor_left, Motor_right;
+extern Motor_t Motor_Down;
+#define RS01_DOWN_MOTOR_ID 0x06U
+#define RS01_LEFT_DIRECTION  (-1)
+#define RS01_RIGHT_DIRECTION (1)
+extern volatile float down_mech_position;
+extern volatile uint32_t down_position_tick;
+extern volatile uint8_t down_position_valid;
+extern volatile int down_run_mode;
+extern volatile float down_iqf;
+extern volatile uint32_t down_iq_tick;
+extern volatile uint8_t down_iq_valid;
+HAL_StatusTypeDef RS01_RequestParameter(uint8_t id, uint16_t index);
+HAL_StatusTypeDef RS01_SetReport(uint8_t id);
+HAL_StatusTypeDef RS01_DisableMotor(uint8_t id);
 
 /* 独立诊断记录：不参与控制；计数持续更新，超时现场仅保存首次。
  * 复位或调用RS01_Init后清零。调试器可直接监视rs01_debug。

@@ -205,6 +205,9 @@ void Basket_Task(void)
             float speed = (basket.distance_mm - BASKET_TARGET_MM) * BASKET_DISTANCE_GAIN;
             if (speed > BASKET_MAX_SPEED) speed = BASKET_MAX_SPEED;
             if (speed < BASKET_MIN_SPEED) speed = BASKET_MIN_SPEED;
+            /* Apply last: a high minimum must not override near-target braking. */
+            if (basket.distance_mm <= BASKET_SLOW_DISTANCE_MM && speed > BASKET_APPROACH_SPEED)
+                speed = BASKET_APPROACH_SPEED;
             uint32_t mask = __get_PRIMASK();
             __disable_irq();
             Motor_left.max_speed = Motor_right.max_speed = speed;
