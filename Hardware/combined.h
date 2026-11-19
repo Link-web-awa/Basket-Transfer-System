@@ -11,7 +11,7 @@
 
 typedef enum { COMBINED_WAIT_HOME, COMBINED_PUSHING, COMBINED_RETRACTING,
                COMBINED_LIFTING, COMBINED_GRABBING, COMBINED_DONE,
-               COMBINED_FAULT, COMBINED_LOWERING } Combined_State;
+               COMBINED_FAULT, COMBINED_LOWERING, COMBINED_WAIT_OBJECT } Combined_State;
 typedef struct {
     Combined_State state;
     uint8_t error; /* 1 init, 2 motor, 3 lift, 4 basket, 5 timeout, 6 abort */

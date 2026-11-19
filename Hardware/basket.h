@@ -3,6 +3,12 @@
 
 #include "RS01.h"
 
+#define BASKET_DETECT_MIN_MM 25U // 检测最近距离，mm（含边界）
+#define BASKET_DETECT_MAX_MM 276U // 检测最远距离，mm（含边界）
+#define BASKET_DETECT_SAMPLES 5U // 连续有效新测距帧数，防止单帧误触发
+#define BASKET_DETECT_STABLE_MS 2000U // 放稳等待时间，ms；距离持续稳定后才启动
+#define BASKET_DETECT_STABLE_MM 5U // 等待期间距离最大波动，mm；超出则重新计时
+
 #define BASKET_SLOW_DISTANCE_MM   80U  // 提前低速接近区的起始距离，mm；按实测制动距离增大
 #define BASKET_APPROACH_SPEED     0.15f // 低速接近区的最终速度上限，rad/s；优先于最低速度设置
 
@@ -10,7 +16,7 @@
  * 速度单位均为电机轴 rad/s，不是圈/s；1圈 = 2π rad。
  */
 #define BASKET_TARGET_MM          25U      // 抓取目标距离，mm；含激光与夹爪安装位置的偏移
-#define BASKET_TOLERANCE_MM       3U       // 目标距离允许偏差±mm；当前有效抓取区间为27～33 mm
+#define BASKET_TOLERANCE_MM       3U       // 目标距离允许偏差±mm；当前有效抓取区间为22～28 mm
 #define BASKET_MIN_CONFIDENCE     50U      // 激光最低有效置信度，0～100；小于此值按无效测距处理
 #define BASKET_LASER_TIMEOUT_MS   300U     // 有效测距允许的最大间隔，ms；前进/停稳阶段超时则故障
 #define BASKET_MAX_FORWARD_TURNS  2.0f     // 从本次出发位置算起，每侧电机最多前进圈数；未到篮子就耗尽行程则故障
@@ -44,6 +50,8 @@ typedef struct {
     float home_left;
     float home_right;
     HAL_StatusTypeDef init_status;
+    uint8_t object_samples;  // 连续检测到范围内物体的帧数
+    uint8_t object_detected; // 1：范围内距离已持续稳定；不是物体类别识别
 } Basket_Info;
 
 extern volatile Basket_Info basket;
@@ -52,5 +60,6 @@ extern volatile uint8_t basket_request;
 HAL_StatusTypeDef Basket_Init(void);
 void Basket_Task(void);              /* Main loop, at least every few ms. */
 void Basket_ControlTick(void);       /* TIM6, every 10 ms, no UART waits. */
+void Basket_ResetDetection(void);
 
 #endif

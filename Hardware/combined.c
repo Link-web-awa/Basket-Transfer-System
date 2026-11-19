@@ -124,6 +124,15 @@ void Combined_Task(void)
     case COMBINED_LIFTING:
         if (lift.state==LIFT_HOLDING)
         {
+            Basket_ResetDetection();
+            Enter(COMBINED_WAIT_OBJECT);
+        }
+        break;
+    case COMBINED_WAIT_OBJECT:
+        /* No waiting timeout: hold lift height until a target is present.
+         * Motor/communication faults and manual abort remain active. */
+        if (basket.object_detected)
+        {
             basket_request=1U;
             Enter(COMBINED_GRABBING);
         }

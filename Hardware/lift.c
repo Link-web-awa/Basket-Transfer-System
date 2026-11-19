@@ -203,7 +203,6 @@ void Lift_Task(void)
         motion_timeout = is_boot ? LIFT_BOOT_TIMEOUT_MS :
                          (request==3U ? LIFT_JOG_TIMEOUT_MS : LIFT_TIMEOUT_MS);
         lift.target_rad=target;
-        lift.peak_current_a=0.0f;
         down_iq_valid=0U;
         lift.motion_tick=HAL_GetTick();
         lift.state=is_boot ? LIFT_PREPOSITION :

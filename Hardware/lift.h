@@ -3,7 +3,7 @@
 #include "RS01.h"
 
 /* 升降参数：圈数指电机轴圈数，时间统一为ms。 */
-#define LIFT_SPEED                  3.0f                 // 升降速度上限，rad/s
+#define LIFT_SPEED                  4.0f                 // 升降速度上限，rad/s
 #define LIFT_CURRENT                4.0f                 // 电机内部电流上限，A
 #define LIFT_ACCELERATION           0.5f                 // PP加速度，rad/s²
 #define LIFT_RISE_TURNS             10.0f                // 每次任务上升圈数
@@ -42,7 +42,7 @@ typedef struct {
     uint16_t tx_command; /* 参数地址；0x0003表示使能指令 */
     HAL_StatusTypeDef tx_status; /* 保留失败时HAL返回值，故障后的查询不覆盖 */
     float current_a;       /* iqf, signed amperes */
-    float peak_current_a;  /* sampled absolute peak since latest move */
+    float peak_current_a;  /* 初始化以来的电流绝对值采样峰值，跨运动累计，单位A */
     uint8_t current_valid; /* recent response within 300 ms */
     uint8_t near_current_limit; /* abs(iqf) >= 90% of configured limit; diagnostic only */
 } Lift_Info;

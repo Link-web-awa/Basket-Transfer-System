@@ -11,6 +11,17 @@ static volatile uint8_t laser_ready;
 static uint8_t near_count;
 static uint8_t far_count;
 static uint8_t servo_rx[32];
+static uint32_t object_tick;
+static uint32_t object_stable_tick, object_min_mm, object_max_mm;
+
+void Basket_ResetDetection(void)
+{
+    basket.object_samples=0U;
+    basket.object_detected=0U;
+    object_tick=HAL_GetTick();
+    object_stable_tick=object_tick;
+    object_min_mm=object_max_mm=0U;
+}
 
 static void Enter(Basket_State state)
 {
@@ -83,6 +94,7 @@ HAL_StatusTypeDef Basket_Init(void)
     basket.init_status = HAL_BUSY;
     basket_request = laser_ready = near_count = far_count = 0U;
     basket.fault_distance_mm = 0U;
+    Basket_ResetDetection();
     RS01_Init();
     Motor_left.position_kp = Motor_right.position_kp = 1.5f;
     status = FDCAN2_ConfigureRxFilters();
@@ -129,6 +141,36 @@ void Basket_Task(void)
     uint8_t fresh = MINIF_TryGetData(&sample, &sample_tick);
     if (fresh)
     {
+        if ((uint32_t)(sample_tick-object_tick)>=BASKET_LASER_TIMEOUT_MS)
+            basket.object_samples=0U;
+        object_tick=sample_tick;
+        if (sample.distance>=BASKET_DETECT_MIN_MM && sample.distance<=BASKET_DETECT_MAX_MM &&
+            sample.distance>=DISTANCE_MIN && sample.distance<=DISTANCE_MAX &&
+            sample.confidence>=BASKET_MIN_CONFIDENCE &&
+            (uint32_t)(now-sample_tick)<BASKET_LASER_TIMEOUT_MS)
+        {
+            if (basket.object_samples==0U)
+            {
+                object_stable_tick=sample_tick;
+                object_min_mm=object_max_mm=sample.distance;
+            }
+            else
+            {
+                if (sample.distance<object_min_mm) object_min_mm=sample.distance;
+                if (sample.distance>object_max_mm) object_max_mm=sample.distance;
+                if (object_max_mm-object_min_mm>BASKET_DETECT_STABLE_MM)
+                {
+                    /* A moving target restarts the full settling interval. */
+                    basket.object_samples=0U;
+                    object_stable_tick=sample_tick;
+                    object_min_mm=object_max_mm=sample.distance;
+                }
+            }
+            if (basket.object_samples<BASKET_DETECT_SAMPLES) ++basket.object_samples;
+        }
+        else basket.object_samples=0U;
+        basket.object_detected=basket.object_samples>=BASKET_DETECT_SAMPLES &&
+            (uint32_t)(sample_tick-object_stable_tick)>=BASKET_DETECT_STABLE_MS;
         basket.distance_mm = sample.distance;
         basket.confidence = sample.confidence;
         if (sample.distance >= DISTANCE_MIN && sample.distance <= DISTANCE_MAX &&
@@ -143,6 +185,11 @@ void Basket_Task(void)
             near_count = 0U;
         }
     }
+    if ((uint32_t)(now-object_tick)>=BASKET_LASER_TIMEOUT_MS)
+    {
+        basket.object_samples=0U;
+        basket.object_detected=0U;
+    }
     /* Drain UART4 replies so an old reply cannot leave reception stopped. */
     Servo_getData(servo_rx);
 
@@ -155,6 +202,9 @@ void Basket_Task(void)
 
     if (basket_request == 1U)
     {
+        /* Keep start pending without motion until an object is stably present. */
+        if ((basket.state==BASKET_IDLE || basket.state==BASKET_DONE) && !basket.object_detected)
+            return;
         basket_request = 0U;
         if ((basket.state == BASKET_IDLE || basket.state == BASKET_DONE) &&
             laser_ready && (uint32_t)(now - basket.laser_tick) < BASKET_LASER_TIMEOUT_MS)
