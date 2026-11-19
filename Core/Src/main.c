@@ -29,6 +29,8 @@
 #include "RS01.h"
 #include "MINIF.h"
 #include "interrupt.h"
+#include "app_task_config.h"
+#include "combined.h"
 #include "basket.h"
 #include "lift.h"
 
@@ -113,7 +115,14 @@ int main(void)
   MINIF_Init();
   Servo_Init();
   HAL_Delay(3000U);
+  #if APP_TASK_MODE == APP_TASK_BASKET
   (void)Basket_Init();
+  #elif APP_TASK_MODE == APP_TASK_COMBINED
+  (void)Combined_Init();
+  #else
+  RS01_Init();
+  (void)Lift_Init();
+  #endif
   // Servo_set_id(0,4);
   // HAL_Delay(100);
   // Servo_SendCommand("#255PID!");
@@ -132,7 +141,13 @@ int main(void)
   {
     /* USER CODE END WHILE */
     /* USER CODE BEGIN 3 */
+    #if APP_TASK_MODE == APP_TASK_BASKET
     Basket_Task();
+    #elif APP_TASK_MODE == APP_TASK_COMBINED
+    Combined_Task();
+    #else
+    Lift_Task();
+    #endif
     HAL_Delay(1U);
   }
   /* USER CODE END 3 */
@@ -205,7 +220,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6)
     {
+        #if APP_TASK_MODE == APP_TASK_BASKET
         Basket_ControlTick();
+        #elif APP_TASK_MODE == APP_TASK_COMBINED
+        Combined_ControlTick();
+        #endif
     }
 }
 

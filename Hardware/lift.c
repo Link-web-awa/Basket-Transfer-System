@@ -1,4 +1,5 @@
 #include "lift.h"
+#include "lift_can.h"
 #include <math.h>
 
 volatile Lift_Info lift;
@@ -14,11 +15,27 @@ static HAL_StatusTypeDef Write(uint16_t index, float value)
 {
     HAL_StatusTypeDef status;
     uint32_t start = HAL_GetTick();
+    lift.tx_command=index;
     do {
         status = RS01_WriteFloat(RS01_DOWN_MOTOR_ID, index, value);
-        if (status != HAL_BUSY) return status;
+        if (status != HAL_BUSY) { lift.tx_status=status; return status; }
         HAL_Delay(LIFT_WRITE_RETRY_MS);
     } while ((uint32_t)(HAL_GetTick()-start) < LIFT_WRITE_TIMEOUT_MS);
+    lift.tx_status=HAL_TIMEOUT;
+    return HAL_TIMEOUT;
+}
+
+static HAL_StatusTypeDef Enable(void)
+{
+    HAL_StatusTypeDef status;
+    uint32_t start=HAL_GetTick();
+    lift.tx_command=0x0003U;
+    do {
+        status=RS01_EnableMotor(RS01_DOWN_MOTOR_ID);
+        if(status!=HAL_BUSY) { lift.tx_status=status; return status; }
+        HAL_Delay(LIFT_WRITE_RETRY_MS);
+    } while((uint32_t)(HAL_GetTick()-start)<LIFT_WRITE_TIMEOUT_MS);
+    lift.tx_status=HAL_TIMEOUT;
     return HAL_TIMEOUT;
 }
 
@@ -30,6 +47,11 @@ static void Fault(uint8_t error)
     /* PP zero velocity stops the trajectory without explicitly disabling torque.
      * Best effort only: communication loss cannot guarantee load retention. */
     (void)RS01_WriteFloat(RS01_DOWN_MOTOR_ID, 0x7024U, 0.0f);
+}
+
+void Lift_StopHold(void)
+{
+    Fault(5U);
 }
 
 HAL_StatusTypeDef Lift_Init(void)
@@ -45,21 +67,29 @@ HAL_StatusTypeDef Lift_Init(void)
     down_iq_valid = 0U;
     iq_query_tick = HAL_GetTick();
     Motor_Down.limit_cur = LIFT_CURRENT;
+    lift.step=1U;
+    status=LiftCan_Start();
+    lift.tx_status=status;
+    if(status!=HAL_OK) { Fault(1U); return status; }
+    HAL_Delay(LIFT_CAN_POWER_WAIT_MS);
+    lift.step=2U;
     status = RS01_DisableMotor(RS01_DOWN_MOTOR_ID);
     if (status == HAL_OK) { HAL_Delay(LIFT_INIT_COMMAND_DELAY_MS); status = RS01_WriteU8(RS01_DOWN_MOTOR_ID,0x7005U,1U); }
     if (status == HAL_OK) { HAL_Delay(LIFT_INIT_COMMAND_DELAY_MS); status = Write(0x7018U,LIFT_CURRENT); }
     if (status == HAL_OK) { HAL_Delay(LIFT_INIT_COMMAND_DELAY_MS); status = Write(0x7024U,LIFT_SPEED); }
     if (status == HAL_OK) { HAL_Delay(LIFT_INIT_COMMAND_DELAY_MS); status = Write(0x7025U,LIFT_ACCELERATION); }
     if (status == HAL_OK) { HAL_Delay(LIFT_INIT_COMMAND_DELAY_MS); status = RS01_SetReport(RS01_DOWN_MOTOR_ID); }
-    if (status != HAL_OK) { Fault(1U); return status; }
+    if (status != HAL_OK) { lift.tx_status=status; Fault(1U); return status; }
     start = HAL_GetTick();
+    lift.step=3U;
     down_run_mode = -1;
     do {
         (void)RS01_RequestParameter(RS01_DOWN_MOTOR_ID,0x7005U);
         HAL_Delay(LIFT_INIT_QUERY_DELAY_MS);
     } while (down_run_mode != 1 && (uint32_t)(HAL_GetTick()-start)<LIFT_INIT_TIMEOUT_MS);
-    if (down_run_mode != 1) { Fault(1U); return HAL_TIMEOUT; }
+    if (down_run_mode != 1) { lift.tx_status=HAL_TIMEOUT; Fault(1U); return HAL_TIMEOUT; }
     start = HAL_GetTick();
+    lift.step=4U;
     down_position_valid = 0U;
     do {
         (void)RS01_RequestParameter(RS01_DOWN_MOTOR_ID,0x7019U);
@@ -67,6 +97,7 @@ HAL_StatusTypeDef Lift_Init(void)
     } while (!down_position_valid && (uint32_t)(HAL_GetTick()-start)<LIFT_INIT_TIMEOUT_MS);
     if (!down_position_valid) { Fault(2U); return HAL_TIMEOUT; }
     lift.home_rad = lift.target_rad = down_mech_position;
+    lift.step=5U;
     status = Write(0x7016U,lift.home_rad);
     if (status != HAL_OK) { Fault(1U); return status; }
     /* Main loop starts preposition once; commands wait until it completes. */
@@ -149,6 +180,7 @@ void Lift_Task(void)
         else return;
         if (!enabled)
         {
+            lift.step=5U;
             /* Preload the CURRENT position only. Enable may reset loc_ref. */
             if (Write(0x7016U,down_mech_position)!=HAL_OK) { Fault(1U); return; }
             uint32_t mask=__get_PRIMASK();
@@ -157,11 +189,13 @@ void Lift_Task(void)
             Motor_Down.feedback_valid=0U;
             Motor_Down.state=RS01_IDLE;
             __set_PRIMASK(mask);
-            if (RS01_EnableMotor(RS01_DOWN_MOTOR_ID)!=HAL_OK) { Fault(1U); return; }
+            lift.step=6U;
+            if (Enable()!=HAL_OK) { Fault(1U); return; }
             enabled=1U; enable_tick=HAL_GetTick();
             HAL_Delay(LIFT_ENABLE_DELAY_MS);
         }
         /* PP protocol: enable, set limits, then publish the motion target. */
+        lift.step=7U;
         if (Write(0x7018U,LIFT_CURRENT)!=HAL_OK ||
             Write(0x7024U,is_boot ? LIFT_BOOT_SPEED : LIFT_SPEED)!=HAL_OK ||
             Write(0x7025U,LIFT_ACCELERATION)!=HAL_OK || Write(0x7016U,target)!=HAL_OK)

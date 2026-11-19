@@ -1,4 +1,5 @@
 #include "RS01.h"
+#include "lift_can.h"
 #include <math.h>
 #include <string.h>
 
@@ -50,10 +51,11 @@ static void RS01_RecordTimeout(Motor_t *motor, uint32_t now, uint32_t feedback_t
         rs01_debug.left_age = now - Motor_left.feedback_tick;
         rs01_debug.right_age = now - Motor_right.feedback_tick;
         rs01_debug.previous_state = motor->state;
-        rs01_debug.can_psr = hfdcan2.Instance->PSR;
-        rs01_debug.can_ecr = hfdcan2.Instance->ECR;
-        rs01_debug.can_rxf0s = hfdcan2.Instance->RXF0S;
-        rs01_debug.can_ir = hfdcan2.Instance->IR;
+        FDCAN_HandleTypeDef *bus=motor==&Motor_Down ? &hfdcan1 : &hfdcan2;
+        rs01_debug.can_psr = bus->Instance->PSR;
+        rs01_debug.can_ecr = bus->Instance->ECR;
+        rs01_debug.can_rxf0s = bus->Instance->RXF0S;
+        rs01_debug.can_ir = bus->Instance->IR;
         rs01_debug.captured = 1U;
     }
     __set_PRIMASK(primask);
@@ -79,6 +81,8 @@ static float RS01_LimitValue(float value, float minimum, float maximum)
 /* 非阻塞发帧：短临界区保护 HAL 发送队列，队列满立即返回。 */
 static HAL_StatusTypeDef RS01_SendFrame(uint8_t id, uint8_t type, const uint8_t data[8])
 {
+    FDCAN_HandleTypeDef *bus=id==RS01_DOWN_MOTOR_ID ? &hfdcan1 : &hfdcan2;
+    if(bus->Instance==NULL || bus->State!=HAL_FDCAN_STATE_BUSY) return HAL_ERROR;
     FDCAN_TxHeaderTypeDef header = {0};
     header.Identifier = ((uint32_t)type << 24) | (0xFDUL << 8) | id;
     header.IdType = FDCAN_EXTENDED_ID;
@@ -93,9 +97,9 @@ static HAL_StatusTypeDef RS01_SendFrame(uint8_t id, uint8_t type, const uint8_t 
     __disable_irq();
 
     HAL_StatusTypeDef status = HAL_BUSY;
-    if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0U)
+    if (HAL_FDCAN_GetTxFifoFreeLevel(bus) > 0U)
     {
-        status = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &header, data);
+        status = HAL_FDCAN_AddMessageToTxFifoQ(bus, &header, data);
     }
 
     __set_PRIMASK(primask);
@@ -209,17 +213,18 @@ static HAL_StatusTypeDef RS01_InitSend(Motor_t *motor, uint8_t type, const uint8
     }
 
     /* 入队后等待该帧真正发出，避免初始化提前结束。 */
-    uint32_t buffer = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(&hfdcan2);
-    while (HAL_FDCAN_IsTxBufferMessagePending(&hfdcan2, buffer))
+    FDCAN_HandleTypeDef *bus=motor->motor_id==RS01_DOWN_MOTOR_ID ? &hfdcan1 : &hfdcan2;
+    uint32_t buffer = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(bus);
+    while (HAL_FDCAN_IsTxBufferMessagePending(bus, buffer))
     {
         if ((uint32_t)(HAL_GetTick() - start) >= timeout_ms)
         {
-            (void)HAL_FDCAN_AbortTxRequest(&hfdcan2, buffer);
+            (void)HAL_FDCAN_AbortTxRequest(bus, buffer);
             return HAL_TIMEOUT;
         }
         HAL_Delay(1U);
     }
-    return (hfdcan2.Instance->TXBTO & buffer) ? HAL_OK : HAL_ERROR;
+    return (bus->Instance->TXBTO & buffer) ? HAL_OK : HAL_ERROR;
 }
 
 /* 主程序调用一次：失能、配置、查询模式、使能，最后等待新的运行反馈。
@@ -666,7 +671,8 @@ void update_motorstate(Motor_t *motor, const uint8_t *data)
  */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
 {
-    if (hfdcan->Instance != FDCAN2 || (RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0U)
+    if ((hfdcan->Instance != FDCAN2 && hfdcan->Instance != FDCAN1) ||
+        (RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0U)
     {
         return;
     }
@@ -690,6 +696,9 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs)
         uint8_t type = (header.Identifier >> 24) & 0x1FU;
         uint8_t motor_id = (header.Identifier >> 8) & 0xFFU;
         uint8_t host_id = header.Identifier & 0xFFU;
+        /* Enforce motor/bus ownership even with accept-all hardware filters. */
+        if ((hfdcan->Instance==FDCAN1 && motor_id!=RS01_DOWN_MOTOR_ID) ||
+            (hfdcan->Instance==FDCAN2 && motor_id==RS01_DOWN_MOTOR_ID)) continue;
         /* 在主机地址过滤前记录右电机帧，避免把解析过滤误认为没收到。 */
         if (motor_id == Motor_right.motor_id)
         {

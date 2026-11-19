@@ -6,7 +6,7 @@
 #define LIFT_SPEED                  2.0f
 #define LIFT_CURRENT                4.0f
 #define LIFT_ACCELERATION           0.2f
-#define LIFT_RISE_TURNS             5.0f
+#define LIFT_RISE_TURNS             10.0f
 #define LIFT_JOG_TURNS              0.02f
 #define LIFT_UP_DIRECTION           (-1)
 #define LIFT_BOOT_TURNS             0.0f
@@ -38,6 +38,9 @@ typedef struct {
     float home_rad, target_rad, position_rad;
     uint32_t motion_tick;
     uint8_t error; /* 1 CAN, 2 feedback, 3 motor, 4 timeout */
+    uint8_t step; /* 1 CAN启动，2配置，3模式确认，4位置读取，5目标预置，6使能，7运动参数 */
+    uint16_t tx_command; /* 参数地址；0x0003表示使能指令 */
+    HAL_StatusTypeDef tx_status; /* 保留失败时HAL返回值，故障后的查询不覆盖 */
     float current_a;       /* iqf, signed amperes */
     float peak_current_a;  /* sampled absolute peak since latest move */
     uint8_t current_valid; /* recent response within 300 ms */
@@ -50,4 +53,5 @@ extern volatile uint8_t lift_request;
 extern volatile int8_t lift_up_direction; /* +1/-1 after unloaded direction check */
 HAL_StatusTypeDef Lift_Init(void);
 void Lift_Task(void);
+void Lift_StopHold(void); // 尽力停止PP轨迹并锁存故障，不主动失能升降轴
 #endif
