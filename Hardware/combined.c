@@ -12,7 +12,14 @@ static void Enter(Combined_State state)
 
 static void Fail(uint8_t error)
 {
-    if (combined.state!=COMBINED_FAULT) combined.error=error;
+    if (combined.state!=COMBINED_FAULT)
+    {
+        combined.error=error;
+        combined.fault_stage=combined.state;
+        combined.fault_basket_error=basket.error;
+        combined.fault_distance_mm=basket.distance_mm;
+        combined.fault_confidence=basket.confidence;
+    }
     combined.state=COMBINED_FAULT;
     basket_request=2U;
     Basket_Task(); /* Latch paired upper-axis stop. */
@@ -42,6 +49,9 @@ HAL_StatusTypeDef Combined_Init(void)
     HAL_StatusTypeDef status;
     combined_request=0U;
     combined.error=0U;
+    combined.fault_basket_error=BASKET_ERROR_NONE;
+    combined.fault_distance_mm=0U;
+    combined.fault_confidence=0U;
     Enter(COMBINED_WAIT_HOME);
     /* Basket_Init owns the only RS01_Init, CAN startup and TIM6 startup. */
     status=Basket_Init();
@@ -64,16 +74,27 @@ void Combined_Task(void)
     lift_request=0U;
     if (combined.state!=COMBINED_GRABBING) basket_request=0U;
     if (request==2U) { Fail(6U); return; }
-    if (combined.state==COMBINED_FAULT) return;
+    if (combined.state==COMBINED_FAULT)
+    {
+        /* Fail() already latched BASKET_FAULT. Basket_Task updates telemetry
+         * before its fault guard, without restarting any motion. */
+        if (basket.state==BASKET_FAULT) Basket_Task();
+        return;
+    }
     Lift_Task();
     if (lift.state==LIFT_FAULT) { Fail(3U); return; }
     if (basket.state==BASKET_FAULT) { Fail(4U); return; }
     Basket_Task(); /* Keep laser fresh and drain servo replies, but no auto action. */
     if (basket.state==BASKET_FAULT) { Fail(4U); return; }
 
-    if (request==1U && combined.state==COMBINED_WAIT_HOME &&
+    if (request==1U && (combined.state==COMBINED_WAIT_HOME || combined.state==COMBINED_DONE) &&
         (lift.state==LIFT_READY || lift.state==LIFT_HOME))
     {
+        /* A completed basket from the previous round is not this round's result. */
+        basket.state=BASKET_IDLE;
+        basket.error=BASKET_ERROR_NONE;
+        basket_request=0U;
+        combined.error=0U;
         combined.left_home=Motor_left.total_angle;
         combined.right_home=Motor_right.total_angle;
         if (Pair(COMBINED_PUSH_TURNS,COMBINED_PUSH_TURNS)) Enter(COMBINED_PUSHING);
@@ -108,10 +129,25 @@ void Combined_Task(void)
         }
         break;
     case COMBINED_GRABBING:
-        if (basket.state==BASKET_DONE) Enter(COMBINED_DONE);
-        /* No valid laser at launch: Basket_Task rejects request without moving. */
+        if (basket.state==BASKET_DONE)
+        {
+            lift_request=2U;
+            Lift_Task();
+            if (lift.state==LIFT_DESCENDING) Enter(COMBINED_LOWERING);
+            else Fail(3U);
+        }
+        /* A rejected launch with invalid laser is not yet a moving-axis fault.
+         * Wait at the held lift position, but never bypass measurement checks. */
         else if (basket.state==BASKET_IDLE && basket_request==0U && basket.error!=BASKET_ERROR_NONE)
-            Fail(4U);
+        {
+            if (basket.error==BASKET_ERROR_LASER &&
+                (uint32_t)(HAL_GetTick()-combined.stage_tick)<COMBINED_LASER_WAIT_MS)
+                basket_request=1U;
+            else Fail(4U);
+        }
+        break;
+    case COMBINED_LOWERING:
+        if (lift.state==LIFT_HOME) Enter(COMBINED_DONE);
         break;
     default: break;
     }

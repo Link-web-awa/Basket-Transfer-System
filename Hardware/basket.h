@@ -9,7 +9,7 @@
 /* 抓篮参数：距离为激光到篮子的读数；电机圈数不直接等于直线行程。
  * 速度单位均为电机轴 rad/s，不是圈/s；1圈 = 2π rad。
  */
-#define BASKET_TARGET_MM          30U      // 抓取目标距离，mm；含激光与夹爪安装位置的偏移
+#define BASKET_TARGET_MM          25U      // 抓取目标距离，mm；含激光与夹爪安装位置的偏移
 #define BASKET_TOLERANCE_MM       3U       // 目标距离允许偏差±mm；当前有效抓取区间为27～33 mm
 #define BASKET_MIN_CONFIDENCE     50U      // 激光最低有效置信度，0～100；小于此值按无效测距处理
 #define BASKET_LASER_TIMEOUT_MS   300U     // 有效测距允许的最大间隔，ms；前进/停稳阶段超时则故障

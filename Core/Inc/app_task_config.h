@@ -7,7 +7,7 @@
 
 /* 只改此处选择任务，重新编译下载后生效；不是运行时切换。 */
 #ifndef APP_TASK_MODE
-#define APP_TASK_MODE APP_TASK_LIFT
+#define APP_TASK_MODE APP_TASK_COMBINED
 #endif
 
 #if APP_TASK_MODE != APP_TASK_BASKET && APP_TASK_MODE != APP_TASK_LIFT && APP_TASK_MODE != APP_TASK_COMBINED
